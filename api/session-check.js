@@ -1,31 +1,47 @@
-import { Redis } from "@upstash/redis";
+import { parseCookies, verifyStandaloneToken } from "./_auth-utils.js";
 
-const redis = Redis.fromEnv();
-
-function parseCookies(cookieHeader) {
-  const cookies = {};
-  if (!cookieHeader) return cookies;
-  cookieHeader.split(";").forEach((pair) => {
-    const [key, ...rest] = pair.trim().split("=");
-    cookies[key] = rest.join("=");
-  });
-  return cookies;
+async function checkRedisSession(token) {
+  try {
+    const { Redis } = await import("@upstash/redis");
+    const redis = Redis.fromEnv();
+    const username = await redis.get(`session:${token}`);
+    return username || null;
+  } catch (err) {
+    console.error("redis session check failed (upstash unreachable?):", err);
+    return null;
+  }
 }
 
 export default async function handler(req, res) {
   const cookies = parseCookies(req.headers.cookie);
-  const token = cookies.process_rx_session;
+  const raw = cookies.process_rx_session;
 
-  if (!token) {
+  if (!raw || !raw.includes(":")) {
     res.status(401).json({ authenticated: false });
     return;
   }
 
-  const username = await redis.get(`session:${token}`);
-  if (!username) {
-    res.status(401).json({ authenticated: false });
+  const [kind, token] = raw.split(/:(.+)/); // 最初の":"だけで分割(トークン内に"."は含むが":"は含まない)
+
+  if (kind === "standalone") {
+    const result = verifyStandaloneToken(token);
+    if (!result) {
+      res.status(401).json({ authenticated: false });
+      return;
+    }
+    res.status(200).json({ authenticated: true, username: result.username });
     return;
   }
 
-  res.status(200).json({ authenticated: true, username });
+  if (kind === "redis") {
+    const username = await checkRedisSession(token);
+    if (!username) {
+      res.status(401).json({ authenticated: false });
+      return;
+    }
+    res.status(200).json({ authenticated: true, username });
+    return;
+  }
+
+  res.status(401).json({ authenticated: false });
 }

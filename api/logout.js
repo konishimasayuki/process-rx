@@ -1,16 +1,4 @@
-import { Redis } from "@upstash/redis";
-
-const redis = Redis.fromEnv();
-
-function parseCookies(cookieHeader) {
-  const cookies = {};
-  if (!cookieHeader) return cookies;
-  cookieHeader.split(";").forEach((pair) => {
-    const [key, ...rest] = pair.trim().split("=");
-    cookies[key] = rest.join("=");
-  });
-  return cookies;
-}
+import { parseCookies } from "./_auth-utils.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -19,11 +7,20 @@ export default async function handler(req, res) {
   }
 
   const cookies = parseCookies(req.headers.cookie);
-  const token = cookies.process_rx_session;
+  const raw = cookies.process_rx_session;
 
-  if (token) {
-    await redis.del(`session:${token}`);
+  if (raw && raw.startsWith("redis:")) {
+    const token = raw.slice("redis:".length);
+    try {
+      const { Redis } = await import("@upstash/redis");
+      const redis = Redis.fromEnv();
+      await redis.del(`session:${token}`);
+    } catch (err) {
+      // Upstashが不通でもCookie削除は続行する
+      console.error("redis session delete failed (upstash unreachable?):", err);
+    }
   }
+  // standaloneトークンはサーバー側に状態を持たないため、Cookie削除のみで失効する
 
   res.setHeader(
     "Set-Cookie",
