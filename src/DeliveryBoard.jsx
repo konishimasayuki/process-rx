@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import Modal from "./Modal.jsx";
+import FloatingAddButton from "./FloatingAddButton.jsx";
 
 function todayStr() {
   const d = new Date();
@@ -14,6 +16,14 @@ function formatDayHeader(dateStr) {
   return `${d.getMonth() + 1}/${d.getDate()}(${weekdays[d.getDay()]})`;
 }
 
+const EMPTY_FORM = {
+  destination_id: "",
+  date: todayStr(),
+  driver: "",
+  time_type: "ALL",
+  time_value: "",
+};
+
 export default function DeliveryBoard() {
   const [startDate] = useState(todayStr());
   const [days, setDays] = useState([]);
@@ -21,13 +31,8 @@ export default function DeliveryBoard() {
   const [knownDrivers, setKnownDrivers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [form, setForm] = useState({
-    destination_id: "",
-    date: todayStr(),
-    driver: "",
-    time_type: "ALL",
-    time_value: "",
-  });
+  const [modalOpen, setModalOpen] = useState(false);
+  const [form, setForm] = useState(EMPTY_FORM);
 
   async function loadWeek() {
     setLoading(true);
@@ -58,6 +63,12 @@ export default function DeliveryBoard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  function openAddModal() {
+    setForm(EMPTY_FORM);
+    setError("");
+    setModalOpen(true);
+  }
+
   async function handleAdd(e) {
     e.preventDefault();
     setError("");
@@ -83,13 +94,7 @@ export default function DeliveryBoard() {
       return;
     }
 
-    setForm({
-      destination_id: "",
-      date: form.date,
-      driver: "",
-      time_type: "ALL",
-      time_value: "",
-    });
+    setModalOpen(false);
     loadWeek();
     loadDrivers();
   }
@@ -113,68 +118,6 @@ export default function DeliveryBoard() {
   return (
     <div style={styles.container}>
       <h2 style={styles.heading}>配達ボード</h2>
-
-      <form style={styles.form} onSubmit={handleAdd}>
-        <input
-          style={styles.input}
-          type="date"
-          value={form.date}
-          onChange={(e) => setForm({ ...form, date: e.target.value })}
-        />
-
-        <select
-          style={styles.input}
-          value={form.destination_id}
-          onChange={(e) => setForm({ ...form, destination_id: e.target.value })}
-        >
-          <option value="">配達先を選択</option>
-          {destinations.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.facility_name ? `[${d.facility_name}] ` : ""}
-              {d.name}様 - {d.address}
-            </option>
-          ))}
-        </select>
-
-        <input
-          style={styles.input}
-          placeholder="ドライバー名(任意)"
-          list="known-drivers"
-          value={form.driver}
-          onChange={(e) => setForm({ ...form, driver: e.target.value })}
-        />
-        <datalist id="known-drivers">
-          {knownDrivers.map((d) => (
-            <option key={d} value={d} />
-          ))}
-        </datalist>
-
-        <select
-          style={styles.input}
-          value={form.time_type}
-          onChange={(e) => setForm({ ...form, time_type: e.target.value })}
-        >
-          <option value="ALL">いつでも(ALL)</option>
-          <option value="AM">AM</option>
-          <option value="PM">PM</option>
-          <option value="FIXED">時間指定</option>
-        </select>
-
-        {form.time_type === "FIXED" && (
-          <input
-            style={styles.input}
-            type="time"
-            value={form.time_value}
-            onChange={(e) => setForm({ ...form, time_value: e.target.value })}
-          />
-        )}
-
-        {error && <p style={styles.error}>{error}</p>}
-
-        <button style={styles.button} type="submit">
-          ボードに追加
-        </button>
-      </form>
 
       {loading ? (
         <p>読み込み中...</p>
@@ -236,6 +179,76 @@ export default function DeliveryBoard() {
           ))}
         </div>
       )}
+
+      <FloatingAddButton onClick={openAddModal} />
+
+      {modalOpen && (
+        <Modal title="配達をボードに追加" onClose={() => setModalOpen(false)}>
+          <form style={styles.form} onSubmit={handleAdd}>
+            <input
+              style={styles.input}
+              type="date"
+              value={form.date}
+              onChange={(e) => setForm({ ...form, date: e.target.value })}
+            />
+
+            <select
+              style={styles.input}
+              value={form.destination_id}
+              onChange={(e) =>
+                setForm({ ...form, destination_id: e.target.value })
+              }
+            >
+              <option value="">配達先を選択</option>
+              {destinations.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.facility_name ? `[${d.facility_name}] ` : ""}
+                  {d.name}様 - {d.address}
+                </option>
+              ))}
+            </select>
+
+            <input
+              style={styles.input}
+              placeholder="ドライバー名(任意)"
+              list="known-drivers"
+              value={form.driver}
+              onChange={(e) => setForm({ ...form, driver: e.target.value })}
+            />
+            <datalist id="known-drivers">
+              {knownDrivers.map((d) => (
+                <option key={d} value={d} />
+              ))}
+            </datalist>
+
+            <select
+              style={styles.input}
+              value={form.time_type}
+              onChange={(e) => setForm({ ...form, time_type: e.target.value })}
+            >
+              <option value="ALL">いつでも(ALL)</option>
+              <option value="AM">AM</option>
+              <option value="PM">PM</option>
+              <option value="FIXED">時間指定</option>
+            </select>
+
+            {form.time_type === "FIXED" && (
+              <input
+                style={styles.input}
+                type="time"
+                value={form.time_value}
+                onChange={(e) => setForm({ ...form, time_value: e.target.value })}
+              />
+            )}
+
+            {error && <p style={styles.error}>{error}</p>}
+
+            <button style={styles.button} type="submit">
+              ボードに追加
+            </button>
+          </form>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -243,23 +256,13 @@ export default function DeliveryBoard() {
 const styles = {
   container: { padding: "1rem", maxWidth: "100%", margin: "0 auto" },
   heading: { fontSize: "1.2rem", marginBottom: "0.8rem" },
-  form: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "0.5rem",
-    marginBottom: "1.5rem",
-    background: "#fff",
-    padding: "1rem",
-    borderRadius: "10px",
-    boxShadow: "0 1px 6px rgba(0,0,0,0.06)",
-    maxWidth: "480px",
-  },
   input: {
     padding: "0.6rem",
     borderRadius: "6px",
     border: "1px solid #ccc",
     fontSize: "1rem",
   },
+  form: { display: "flex", flexDirection: "column", gap: "0.6rem" },
   button: {
     padding: "0.6rem 1.2rem",
     borderRadius: "6px",
@@ -275,7 +278,7 @@ const styles = {
     display: "flex",
     gap: "0.8rem",
     overflowX: "auto",
-    paddingBottom: "1rem",
+    paddingBottom: "5rem",
   },
   dayColumn: {
     minWidth: "220px",
@@ -331,7 +334,13 @@ const styles = {
     flexShrink: 0,
   },
   stopBody: { flex: 1, minWidth: 0 },
-  stopNameRow: { fontSize: "0.8rem", display: "flex", flexWrap: "wrap", gap: "0.2rem", alignItems: "center" },
+  stopNameRow: {
+    fontSize: "0.8rem",
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "0.2rem",
+    alignItems: "center",
+  },
   facilityTag: { fontSize: "0.65rem", color: "#2563eb" },
   timeTag: {
     fontSize: "0.6rem",

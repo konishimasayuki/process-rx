@@ -1,14 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import Modal from "./Modal.jsx";
+import FloatingAddButton from "./FloatingAddButton.jsx";
+
+const EMPTY_FORM = { facility_name: "", name: "", address: "", notes: "" };
 
 export default function DestinationsList() {
   const [destinations, setDestinations] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({
-    facility_name: "",
-    name: "",
-    address: "",
-    notes: "",
-  });
+  const [search, setSearch] = useState("");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -25,9 +26,33 @@ export default function DestinationsList() {
     load();
   }, []);
 
-  function resetForm() {
-    setForm({ facility_name: "", name: "", address: "", notes: "" });
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return destinations;
+    return destinations.filter((d) =>
+      [d.facility_name, d.name, d.address, d.notes]
+        .filter(Boolean)
+        .some((field) => field.toLowerCase().includes(q))
+    );
+  }, [destinations, search]);
+
+  function openAddModal() {
     setEditingId(null);
+    setForm(EMPTY_FORM);
+    setError("");
+    setModalOpen(true);
+  }
+
+  function openEditModal(dest) {
+    setEditingId(dest.id);
+    setForm({
+      facility_name: dest.facility_name || "",
+      name: dest.name || "",
+      address: dest.address || "",
+      notes: dest.notes || "",
+    });
+    setError("");
+    setModalOpen(true);
   }
 
   async function handleSubmit(e) {
@@ -56,19 +81,9 @@ export default function DestinationsList() {
       return;
     }
 
-    resetForm();
     setSaving(false);
+    setModalOpen(false);
     load();
-  }
-
-  function startEdit(dest) {
-    setEditingId(dest.id);
-    setForm({
-      facility_name: dest.facility_name || "",
-      name: dest.name || "",
-      address: dest.address || "",
-      notes: dest.notes || "",
-    });
   }
 
   async function handleDelete(id) {
@@ -78,6 +93,7 @@ export default function DestinationsList() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id }),
     });
+    setModalOpen(false);
     load();
   }
 
@@ -85,108 +101,145 @@ export default function DestinationsList() {
     <div style={styles.container}>
       <h2 style={styles.heading}>配達先一覧</h2>
 
-      <form style={styles.form} onSubmit={handleSubmit}>
-        <input
-          style={styles.input}
-          placeholder="施設名(任意)"
-          value={form.facility_name}
-          onChange={(e) => setForm({ ...form, facility_name: e.target.value })}
-        />
-        <input
-          style={styles.input}
-          placeholder="氏名"
-          value={form.name}
-          onChange={(e) => setForm({ ...form, name: e.target.value })}
-        />
-        <input
-          style={styles.input}
-          placeholder="住所"
-          value={form.address}
-          onChange={(e) => setForm({ ...form, address: e.target.value })}
-        />
-        <input
-          style={styles.input}
-          placeholder="備考(任意)"
-          value={form.notes}
-          onChange={(e) => setForm({ ...form, notes: e.target.value })}
-        />
-        {error && <p style={styles.error}>{error}</p>}
-        <div style={styles.formButtons}>
-          <button style={styles.button} type="submit" disabled={saving}>
-            {editingId ? "更新" : "追加"}
-          </button>
-          {editingId && (
-            <button
-              style={styles.secondaryButton}
-              type="button"
-              onClick={resetForm}
-            >
-              キャンセル
-            </button>
-          )}
-        </div>
-      </form>
+      <input
+        style={styles.search}
+        placeholder="施設名・氏名・住所・備考で検索"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
 
       {loading ? (
         <p>読み込み中...</p>
-      ) : destinations.length === 0 ? (
-        <p style={styles.muted}>配達先がまだ登録されていません</p>
+      ) : filtered.length === 0 ? (
+        <p style={styles.muted}>該当する配達先がありません</p>
       ) : (
-        <ul style={styles.list}>
-          {destinations.map((dest) => (
-            <li key={dest.id} style={styles.listItem}>
-              <div>
-                {dest.facility_name && (
-                  <div style={styles.facility}>{dest.facility_name}</div>
-                )}
-                <div style={styles.destName}>{dest.name} 様</div>
-                <div style={styles.address}>
-                  {dest.address}
-                  {dest.lat == null && (
-                    <span style={styles.geoWarning}>（位置情報未取得）</span>
-                  )}
-                </div>
-                {dest.notes && <div style={styles.notes}>{dest.notes}</div>}
-              </div>
-              <div style={styles.itemButtons}>
-                <button style={styles.smallButton} onClick={() => startEdit(dest)}>
-                  編集
-                </button>
+        <div style={styles.list}>
+          {filtered.map((dest) => (
+            <button
+              key={dest.id}
+              style={styles.row}
+              onClick={() => openEditModal(dest)}
+            >
+              <span style={styles.rowFacility}>{dest.facility_name || "—"}</span>
+              <span style={styles.rowName}>{dest.name}様</span>
+              <span style={styles.rowAddress}>{dest.address}</span>
+              <span style={styles.rowNotes}>{dest.notes}</span>
+              {dest.lat == null && <span style={styles.geoWarning}>位置未取得</span>}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <FloatingAddButton onClick={openAddModal} />
+
+      {modalOpen && (
+        <Modal
+          title={editingId ? "配達先を編集" : "配達先を追加"}
+          onClose={() => setModalOpen(false)}
+        >
+          <form style={styles.form} onSubmit={handleSubmit}>
+            <input
+              style={styles.input}
+              placeholder="施設名(任意)"
+              value={form.facility_name}
+              onChange={(e) => setForm({ ...form, facility_name: e.target.value })}
+            />
+            <input
+              style={styles.input}
+              placeholder="氏名"
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+            />
+            <input
+              style={styles.input}
+              placeholder="住所"
+              value={form.address}
+              onChange={(e) => setForm({ ...form, address: e.target.value })}
+            />
+            <input
+              style={styles.input}
+              placeholder="備考(任意)"
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+            />
+
+            {error && <p style={styles.error}>{error}</p>}
+
+            <div style={styles.formButtons}>
+              <button style={styles.button} type="submit" disabled={saving}>
+                {editingId ? "更新" : "追加"}
+              </button>
+              {editingId && (
                 <button
-                  style={styles.smallDangerButton}
-                  onClick={() => handleDelete(dest.id)}
+                  type="button"
+                  style={styles.dangerButton}
+                  onClick={() => handleDelete(editingId)}
                 >
                   削除
                 </button>
-              </div>
-            </li>
-          ))}
-        </ul>
+              )}
+            </div>
+          </form>
+        </Modal>
       )}
     </div>
   );
 }
 
 const styles = {
-  container: { padding: "1rem", maxWidth: "480px", margin: "0 auto" },
-  heading: { fontSize: "1.2rem", marginBottom: "1rem" },
-  form: {
+  container: { padding: "1rem", maxWidth: "100%" },
+  heading: { fontSize: "1.2rem", marginBottom: "0.8rem" },
+  search: {
+    width: "100%",
+    maxWidth: "480px",
+    padding: "0.6rem",
+    borderRadius: "8px",
+    border: "1px solid #ccc",
+    fontSize: "0.95rem",
+    marginBottom: "1rem",
+    boxSizing: "border-box",
+  },
+  muted: { color: "#888" },
+  list: {
     display: "flex",
     flexDirection: "column",
-    gap: "0.5rem",
-    marginBottom: "1.5rem",
     background: "#fff",
-    padding: "1rem",
     borderRadius: "10px",
     boxShadow: "0 1px 6px rgba(0,0,0,0.06)",
+    overflow: "hidden",
   },
+  row: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.8rem",
+    padding: "0.6rem 1rem",
+    borderBottom: "1px solid #f0f0f0",
+    background: "none",
+    border: "none",
+    borderBottomWidth: "1px",
+    borderBottomStyle: "solid",
+    borderBottomColor: "#f0f0f0",
+    textAlign: "left",
+    cursor: "pointer",
+    width: "100%",
+    fontSize: "0.85rem",
+    overflowX: "auto",
+    whiteSpace: "nowrap",
+  },
+  rowFacility: { color: "#2563eb", flexShrink: 0, minWidth: "80px" },
+  rowName: { fontWeight: 600, flexShrink: 0, minWidth: "90px" },
+  rowAddress: { color: "#555", flex: 1, minWidth: "160px" },
+  rowNotes: { color: "#999", flexShrink: 0, maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis" },
+  geoWarning: { color: "#d97706", fontSize: "0.7rem", flexShrink: 0 },
+
+  form: { display: "flex", flexDirection: "column", gap: "0.6rem" },
   input: {
     padding: "0.6rem",
     borderRadius: "6px",
     border: "1px solid #ccc",
     fontSize: "1rem",
   },
-  formButtons: { display: "flex", gap: "0.5rem" },
+  formButtons: { display: "flex", gap: "0.5rem", marginTop: "0.3rem" },
   button: {
     padding: "0.6rem 1.2rem",
     borderRadius: "6px",
@@ -196,49 +249,14 @@ const styles = {
     fontSize: "0.95rem",
     cursor: "pointer",
   },
-  secondaryButton: {
+  dangerButton: {
     padding: "0.6rem 1.2rem",
     borderRadius: "6px",
-    border: "1px solid #ccc",
+    border: "1px solid #fca5a5",
     background: "#fff",
-    color: "#333",
+    color: "#dc2626",
     fontSize: "0.95rem",
     cursor: "pointer",
   },
   error: { color: "#dc2626", fontSize: "0.85rem", margin: 0 },
-  muted: { color: "#888" },
-  list: { listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: "0.6rem" },
-  listItem: {
-    background: "#fff",
-    padding: "0.8rem 1rem",
-    borderRadius: "8px",
-    boxShadow: "0 1px 4px rgba(0,0,0,0.05)",
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    gap: "0.5rem",
-  },
-  facility: { fontSize: "0.75rem", color: "#2563eb", fontWeight: 600 },
-  destName: { fontSize: "1rem", fontWeight: 600 },
-  address: { fontSize: "0.85rem", color: "#555" },
-  notes: { fontSize: "0.8rem", color: "#888", marginTop: "0.2rem" },
-  geoWarning: { color: "#d97706", fontSize: "0.75rem", marginLeft: "0.4rem" },
-  itemButtons: { display: "flex", flexDirection: "column", gap: "0.3rem" },
-  smallButton: {
-    padding: "0.3rem 0.6rem",
-    fontSize: "0.75rem",
-    borderRadius: "5px",
-    border: "1px solid #ccc",
-    background: "#fff",
-    cursor: "pointer",
-  },
-  smallDangerButton: {
-    padding: "0.3rem 0.6rem",
-    fontSize: "0.75rem",
-    borderRadius: "5px",
-    border: "1px solid #fca5a5",
-    background: "#fff",
-    color: "#dc2626",
-    cursor: "pointer",
-  },
 };
