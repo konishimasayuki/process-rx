@@ -32,66 +32,88 @@ async function listEntriesForDate(date) {
     .map((raw) => (typeof raw === "string" ? JSON.parse(raw) : raw));
 }
 
+function addDays(dateStr, n) {
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setDate(d.getDate() + n);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+async function buildDayView(date, depotGeo) {
+  const entries = await listEntriesForDate(date);
+
+  const withDestinations = await Promise.all(
+    entries.map(async (entry) => {
+      const destination = await getDestination(entry.destination_id);
+      return { ...entry, destination };
+    })
+  );
+
+  const byDriver = {};
+  for (const entry of withDestinations) {
+    const driver = entry.driver || "未割当";
+    if (!byDriver[driver]) byDriver[driver] = [];
+    byDriver[driver].push(entry);
+  }
+
+  const drivers = Object.entries(byDriver).map(([driver, driverEntries]) => {
+    const stops = driverEntries
+      .filter((e) => e.destination)
+      .map((e) => ({
+        ...e.destination,
+        entry_id: e.id,
+        time_type: e.time_type,
+        time_value: e.time_value,
+      }));
+
+    const { ordered, routable } = orderStopsByNearestNeighbor(depotGeo, stops);
+    const mapsUrl = routable ? buildGoogleMapsRouteUrl(ordered) : null;
+
+    return { driver, stops: ordered, routable, maps_url: mapsUrl };
+  });
+
+  return { date, drivers };
+}
+
 export default async function handler(req, res) {
   if (req.method === "GET") {
-    const { date } = req.query || {};
-    if (!date) {
-      res.status(400).json({ error: "dateクエリパラメータが必要です(YYYY-MM-DD)" });
+    const { date, start_date, days } = req.query || {};
+    const depotGeo = await getDepotGeo();
+
+    if (start_date && days) {
+      const numDays = Math.min(Number(days) || 7, 31);
+      const dayViews = [];
+      for (let i = 0; i < numDays; i++) {
+        dayViews.push(await buildDayView(addDays(start_date, i), depotGeo));
+      }
+      res.status(200).json({ depot_address: DEPOT_ADDRESS, days: dayViews });
       return;
     }
 
-    const entries = await listEntriesForDate(date);
-
-    // 配達先情報を結合
-    const withDestinations = await Promise.all(
-      entries.map(async (entry) => {
-        const destination = await getDestination(entry.destination_id);
-        return { ...entry, destination };
-      })
-    );
-
-    // ドライバーごとにグループ化して、それぞれ最近傍法で並び替え
-    const byDriver = {};
-    for (const entry of withDestinations) {
-      const driver = entry.driver || "未割当";
-      if (!byDriver[driver]) byDriver[driver] = [];
-      byDriver[driver].push(entry);
+    if (!date) {
+      res
+        .status(400)
+        .json({ error: "dateか、start_date+daysのクエリパラメータが必要です" });
+      return;
     }
 
-    const depotGeo = await getDepotGeo();
-
-    const drivers = Object.entries(byDriver).map(([driver, driverEntries]) => {
-      const stops = driverEntries
-        .filter((e) => e.destination)
-        .map((e) => ({
-          ...e.destination,
-          entry_id: e.id,
-          time_type: e.time_type,
-          time_value: e.time_value,
-        }));
-
-      const { ordered, routable } = orderStopsByNearestNeighbor(depotGeo, stops);
-      const mapsUrl = routable ? buildGoogleMapsRouteUrl(ordered) : null;
-
-      return {
-        driver,
-        stops: ordered,
-        routable,
-        maps_url: mapsUrl,
-      };
-    });
-
-    res.status(200).json({ date, depot_address: DEPOT_ADDRESS, drivers });
+    const dayView = await buildDayView(date, depotGeo);
+    res
+      .status(200)
+      .json({ date, depot_address: DEPOT_ADDRESS, drivers: dayView.drivers });
     return;
   }
 
   if (req.method === "POST") {
     const { destination_id, date, driver, time_type, time_value } = req.body || {};
+    const driverName = driver && driver.trim() ? driver.trim() : "";
 
-    if (!destination_id || !date || !driver || !time_type) {
+    if (!destination_id || !date || !time_type) {
       res
         .status(400)
-        .json({ error: "destination_id, date, driver, time_typeは必須です" });
+        .json({ error: "destination_id, date, time_typeは必須です" });
       return;
     }
 
@@ -116,7 +138,7 @@ export default async function handler(req, res) {
       id,
       destination_id,
       date,
-      driver,
+      driver: driverName,
       time_type,
       time_value: time_type === "FIXED" ? time_value : null,
       created_at: new Date().toISOString(),
@@ -124,7 +146,9 @@ export default async function handler(req, res) {
 
     await redis.set(`board_entry:${id}`, JSON.stringify(record));
     await redis.sadd(`board:date:${date}`, id);
-    await redis.sadd("drivers:known", driver);
+    if (driverName) {
+      await redis.sadd("drivers:known", driverName);
+    }
 
     res.status(200).json({ status: "ok", entry: record });
     return;
