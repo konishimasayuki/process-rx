@@ -348,18 +348,18 @@ export default function DeliveryBoard() {
               ))}
             </select>
 
-            <input
+            <select
               style={styles.input}
-              placeholder="ドライバー名(任意)"
-              list="known-drivers"
               value={form.driver}
               onChange={(e) => setForm({ ...form, driver: e.target.value })}
-            />
-            <datalist id="known-drivers">
+            >
+              <option value="">未割当</option>
               {knownDrivers.map((d) => (
-                <option key={d} value={d} />
+                <option key={d} value={d}>
+                  {d}
+                </option>
               ))}
-            </datalist>
+            </select>
 
             <select
               style={styles.input}

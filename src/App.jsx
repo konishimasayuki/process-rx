@@ -208,6 +208,7 @@ export default function App() {
   return (
     <>
       <style>{`
+        *, *::before, *::after { box-sizing: border-box; }
         html, body { margin: 0; overflow-x: hidden; }
         .process-rx-sidebar-desktop { display: none; }
         .process-rx-mobile-header { display: flex; }
