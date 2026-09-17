@@ -32,10 +32,15 @@ export default function MapPreview({ days }) {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
   const markersRef = useRef([]);
-  const [status, setStatus] = useState("loading"); // loading | ready | no_key | no_points | error
+  const [status, setStatus] = useState("loading"); // loading | ready | no_key | no_points | error | auth_error
 
   useEffect(() => {
     let cancelled = false;
+
+    // Google Maps側で認証エラー(キー制限・請求設定など)が起きた際に呼ばれるグローバルコールバック
+    window.gm_authFailure = () => {
+      if (!cancelled) setStatus("auth_error");
+    };
 
     async function init() {
       const res = await fetch("/api/maps-key");
@@ -122,6 +127,16 @@ export default function MapPreview({ days }) {
     return (
       <p style={styles.notice}>
         GOOGLE_MAPS_API_KEY未設定のため地図プレビューは表示できません
+      </p>
+    );
+  }
+
+  if (status === "auth_error") {
+    return (
+      <p style={styles.notice}>
+        地図の表示が許可されていません。Google Cloud
+        ConsoleでこのAPIキーの「APIの制限」にMaps
+        JavaScript APIを追加してください
       </p>
     );
   }
