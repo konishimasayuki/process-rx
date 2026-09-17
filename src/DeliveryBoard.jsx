@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal.jsx";
 import FloatingAddButton from "./FloatingAddButton.jsx";
+import MapPreview from "./MapPreview.jsx";
 
 function todayStr() {
   const d = new Date();
@@ -303,6 +304,8 @@ export default function DeliveryBoard() {
           ))}
         </div>
       )}
+
+      {!loading && <MapPreview days={days} />}
 
       <FloatingAddButton onClick={() => openAddModal()} />
 
