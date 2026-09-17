@@ -208,9 +208,10 @@ export default function App() {
   return (
     <>
       <style>{`
+        html, body { margin: 0; overflow-x: hidden; }
         .process-rx-sidebar-desktop { display: none; }
         .process-rx-mobile-header { display: flex; }
-        .process-rx-main { margin-top: 3rem; margin-left: 0; }
+        .process-rx-main { margin-top: 3rem; margin-left: 0; min-width: 0; }
         @media (min-width: 768px) {
           .process-rx-sidebar-desktop { display: flex; }
           .process-rx-mobile-header { display: none; }
@@ -302,6 +303,8 @@ const styles = {
     background: "#f4f5f7",
     fontFamily: "system-ui, -apple-system, sans-serif",
     display: "flex",
+    width: "100%",
+    minWidth: 0,
   },
 
   // デスクトップサイドバー(768px未満は非表示)
@@ -411,6 +414,7 @@ const styles = {
 
   main: {
     flex: 1,
+    minWidth: 0,
     paddingTop: "1rem",
   },
 };

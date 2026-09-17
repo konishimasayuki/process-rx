@@ -36,6 +36,7 @@ export default function DeliveryBoard() {
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState(emptyForm());
   const [draggingId, setDraggingId] = useState(null);
+  const [dragPreview, setDragPreview] = useState(null);
   const dragInfo = useRef(null);
 
   async function loadWeek(silent) {
@@ -125,23 +126,31 @@ export default function DeliveryBoard() {
   }
 
   // ==== ドラッグ&ドロップ(上下入れ替え/日付変更) ====
-  function handleHandlePointerDown(e, entryId, date, driver) {
+  function handleHandlePointerDown(e, stop, date, driver) {
     e.preventDefault();
-    dragInfo.current = { entryId, sourceDate: date, sourceDriver: driver };
-    setDraggingId(entryId);
-    window.addEventListener("pointermove", handlePointerMoveNoop);
+    dragInfo.current = { entryId: stop.entry_id, sourceDate: date, sourceDriver: driver };
+    setDraggingId(stop.entry_id);
+    setDragPreview({
+      x: e.clientX,
+      y: e.clientY,
+      facilityName: stop.facility_name,
+      name: stop.name,
+      address: stop.address,
+    });
+    window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp, { once: true });
   }
 
-  function handlePointerMoveNoop() {
-    // 実際の判定はpointerup時にelementFromPointで行うため、ここでは何もしない
+  function handlePointerMove(e) {
+    setDragPreview((prev) => (prev ? { ...prev, x: e.clientX, y: e.clientY } : prev));
   }
 
   async function handlePointerUp(e) {
-    window.removeEventListener("pointermove", handlePointerMoveNoop);
+    window.removeEventListener("pointermove", handlePointerMove);
     const drag = dragInfo.current;
     dragInfo.current = null;
     setDraggingId(null);
+    setDragPreview(null);
     if (!drag) return;
 
     const clientX = e.clientX ?? e.changedTouches?.[0]?.clientX;
@@ -252,12 +261,7 @@ export default function DeliveryBoard() {
                         <span
                           style={styles.dragHandle}
                           onPointerDown={(e) =>
-                            handleHandlePointerDown(
-                              e,
-                              stop.entry_id,
-                              day.date,
-                              d.driver
-                            )
+                            handleHandlePointerDown(e, stop, day.date, d.driver)
                           }
                         >
                           ⠿
@@ -301,6 +305,22 @@ export default function DeliveryBoard() {
       )}
 
       <FloatingAddButton onClick={() => openAddModal()} />
+
+      {dragPreview && (
+        <div
+          style={{
+            ...styles.dragPreview,
+            left: dragPreview.x + 12,
+            top: dragPreview.y + 12,
+          }}
+        >
+          {dragPreview.facilityName && (
+            <span style={styles.facilityTag}>{dragPreview.facilityName}</span>
+          )}
+          <strong>{dragPreview.name}様</strong>
+          <div style={styles.address}>{dragPreview.address}</div>
+        </div>
+      )}
 
       {modalOpen && (
         <Modal title="配達をボードに追加" onClose={() => setModalOpen(false)}>
@@ -374,7 +394,7 @@ export default function DeliveryBoard() {
 }
 
 const styles = {
-  container: { padding: "1rem", maxWidth: "100%", margin: "0 auto" },
+  container: { padding: "1rem", maxWidth: "100%", margin: "0 auto", minWidth: 0 },
   headerRow: {
     display: "flex",
     justifyContent: "space-between",
@@ -509,5 +529,17 @@ const styles = {
     fontSize: "0.8rem",
     cursor: "pointer",
     flex: 1,
+  },
+  dragPreview: {
+    position: "fixed",
+    pointerEvents: "none",
+    background: "#fff",
+    border: "1px solid #2563eb",
+    borderRadius: "8px",
+    padding: "0.5rem 0.7rem",
+    boxShadow: "0 4px 14px rgba(0,0,0,0.2)",
+    fontSize: "0.8rem",
+    zIndex: 100,
+    maxWidth: "200px",
   },
 };
