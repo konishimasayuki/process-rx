@@ -108,6 +108,7 @@ export default function DeliveryBoard() {
   }
 
   async function handleRemove(entryId, date) {
+    if (!confirm("この配達をボードから削除しますか？")) return;
     await fetch("/api/delivery-board", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },

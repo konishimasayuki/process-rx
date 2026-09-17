@@ -210,10 +210,11 @@ export default function App() {
       <style>{`
         .process-rx-sidebar-desktop { display: none; }
         .process-rx-mobile-header { display: flex; }
+        .process-rx-main { margin-top: 3rem; margin-left: 0; }
         @media (min-width: 768px) {
           .process-rx-sidebar-desktop { display: flex; }
           .process-rx-mobile-header { display: none; }
-          .process-rx-main { margin-top: 0 !important; }
+          .process-rx-main { margin-top: 0; margin-left: 220px; }
         }
       `}</style>
       {authenticated === null ? (
@@ -305,14 +306,18 @@ const styles = {
 
   // デスクトップサイドバー(768px未満は非表示)
   sidebarDesktop: {
+    position: "fixed",
+    top: 0,
+    left: 0,
+    bottom: 0,
     width: "220px",
-    flexShrink: 0,
+    overflowY: "auto",
     background: "#fff",
     borderRight: "1px solid #e5e7eb",
     padding: "1.2rem 0.8rem",
     flexDirection: "column",
     justifyContent: "space-between",
-    minHeight: "100vh",
+    zIndex: 10,
   },
 
   // モバイルヘッダー
@@ -407,6 +412,5 @@ const styles = {
   main: {
     flex: 1,
     paddingTop: "1rem",
-    marginTop: "3rem", // モバイルヘッダー分の余白(デスクトップでは無害な余白として残す)
   },
 };
