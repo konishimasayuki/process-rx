@@ -81,9 +81,18 @@ export default function DestinationsList() {
       return;
     }
 
+    const data = await res.json();
+    const saved = data.destination;
+
+    setDestinations((prev) => {
+      const withoutOld = prev.filter((d) => d.id !== saved.id);
+      return [...withoutOld, saved].sort((a, b) =>
+        (a.name || "").localeCompare(b.name || "", "ja")
+      );
+    });
+
     setSaving(false);
     setModalOpen(false);
-    load();
   }
 
   async function handleDelete(id) {
@@ -93,8 +102,8 @@ export default function DestinationsList() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id }),
     });
+    setDestinations((prev) => prev.filter((d) => d.id !== id));
     setModalOpen(false);
-    load();
   }
 
   return (

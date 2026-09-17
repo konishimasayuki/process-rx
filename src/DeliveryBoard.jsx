@@ -34,14 +34,14 @@ export default function DeliveryBoard() {
   const [modalOpen, setModalOpen] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
 
-  async function loadWeek() {
-    setLoading(true);
+  async function loadWeek(silent) {
+    if (!silent) setLoading(true);
     const res = await fetch(
       `/api/delivery-board?start_date=${startDate}&days=7`
     );
     const data = await res.json();
     setDays(data.days || []);
-    setLoading(false);
+    if (!silent) setLoading(false);
   }
 
   async function loadDestinations() {
@@ -95,7 +95,7 @@ export default function DeliveryBoard() {
     }
 
     setModalOpen(false);
-    loadWeek();
+    loadWeek(true);
     loadDrivers();
   }
 
@@ -105,7 +105,7 @@ export default function DeliveryBoard() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: entryId, date }),
     });
-    loadWeek();
+    loadWeek(true);
   }
 
   function timeLabel(stop) {
