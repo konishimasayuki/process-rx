@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import DestinationsList from "./DestinationsList.jsx";
+import DeliveryBoard from "./DeliveryBoard.jsx";
 
 function LoginScreen({ onLoginSuccess }) {
   const [username, setUsername] = useState("");
@@ -70,16 +72,53 @@ function LoginScreen({ onLoginSuccess }) {
   );
 }
 
-function Dashboard({ onLogout }) {
+function HomeTab() {
   return (
-    <div style={styles.wrapper}>
-      <div style={styles.card}>
-        <h1 style={styles.title}>process-rx</h1>
-        <p style={styles.subtitle}>ログイン成功。ここにFAX処方箋キューを表示予定。</p>
-        <button style={styles.button} onClick={onLogout}>
+    <div style={styles.card}>
+      <h1 style={styles.title}>process-rx</h1>
+      <p style={styles.subtitle}>ログイン成功。ここにFAX処方箋キューを表示予定。</p>
+    </div>
+  );
+}
+
+function Dashboard({ onLogout }) {
+  const [tab, setTab] = useState("home");
+
+  return (
+    <div style={styles.appWrapper}>
+      <header style={styles.header}>
+        <span style={styles.headerTitle}>process-rx</span>
+        <button style={styles.logoutButton} onClick={onLogout}>
           ログアウト
         </button>
-      </div>
+      </header>
+
+      <nav style={styles.nav}>
+        <button
+          style={tab === "home" ? styles.navButtonActive : styles.navButton}
+          onClick={() => setTab("home")}
+        >
+          ホーム
+        </button>
+        <button
+          style={tab === "board" ? styles.navButtonActive : styles.navButton}
+          onClick={() => setTab("board")}
+        >
+          配達ボード
+        </button>
+        <button
+          style={tab === "destinations" ? styles.navButtonActive : styles.navButton}
+          onClick={() => setTab("destinations")}
+        >
+          配達先一覧
+        </button>
+      </nav>
+
+      <main style={styles.main}>
+        {tab === "home" && <HomeTab />}
+        {tab === "board" && <DeliveryBoard />}
+        {tab === "destinations" && <DestinationsList />}
+      </main>
     </div>
   );
 }
@@ -170,5 +209,58 @@ const styles = {
     color: "#dc2626",
     fontSize: "0.85rem",
     margin: 0,
+  },
+  appWrapper: {
+    minHeight: "100vh",
+    background: "#f4f5f7",
+    fontFamily: "system-ui, -apple-system, sans-serif",
+  },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "0.8rem 1rem",
+    background: "#fff",
+    borderBottom: "1px solid #e5e7eb",
+  },
+  headerTitle: { fontWeight: 700, fontSize: "1.1rem" },
+  logoutButton: {
+    padding: "0.4rem 0.8rem",
+    borderRadius: "6px",
+    border: "1px solid #ccc",
+    background: "#fff",
+    fontSize: "0.8rem",
+    cursor: "pointer",
+  },
+  nav: {
+    display: "flex",
+    gap: "0.5rem",
+    padding: "0.6rem 1rem",
+    background: "#fff",
+    borderBottom: "1px solid #e5e7eb",
+    overflowX: "auto",
+  },
+  navButton: {
+    padding: "0.4rem 0.8rem",
+    borderRadius: "999px",
+    border: "1px solid #ccc",
+    background: "#fff",
+    color: "#333",
+    fontSize: "0.85rem",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  },
+  navButtonActive: {
+    padding: "0.4rem 0.8rem",
+    borderRadius: "999px",
+    border: "1px solid #2563eb",
+    background: "#2563eb",
+    color: "#fff",
+    fontSize: "0.85rem",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  },
+  main: {
+    paddingTop: "1rem",
   },
 };
