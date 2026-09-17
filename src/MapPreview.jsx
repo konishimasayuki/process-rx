@@ -33,18 +33,18 @@ function formatShort(dateStr) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-export default function MapPreview({ days }) {
+export default function MapPreview({ days, depotAddress }) {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
-  const overlaysRef = useRef([]); // markers + polylines
+  const overlaysRef = useRef([]); // markers + polylines + directions renderers
   const [status, setStatus] = useState("loading"); // loading | ready | no_key | no_points | error | auth_error
   const [selectedDate, setSelectedDate] = useState(null); // null = 全日程まとめて表示
   const [expanded, setExpanded] = useState(false);
+  const [dayNotice, setDayNotice] = useState("");
 
   useEffect(() => {
     let cancelled = false;
 
-    // Google Maps側で認証エラー(キー制限・請求設定など)が起きた際に呼ばれるグローバルコールバック
     window.gm_authFailure = () => {
       if (!cancelled) setStatus("auth_error");
     };
@@ -73,7 +73,7 @@ export default function MapPreview({ days }) {
 
         if (!mapInstance.current && mapRef.current) {
           mapInstance.current = new window.google.maps.Map(mapRef.current, {
-            center: { lat: 33.589, lng: 130.401 }, // 福岡付近をデフォルト中心に
+            center: { lat: 33.589, lng: 130.401 },
             zoom: 10,
           });
         }
@@ -92,7 +92,6 @@ export default function MapPreview({ days }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 選択日が消えた(表示範囲から外れた)場合は全日程表示に戻す
   useEffect(() => {
     if (selectedDate && !days.some((d) => d.date === selectedDate)) {
       setSelectedDate(null);
@@ -100,77 +99,168 @@ export default function MapPreview({ days }) {
   }, [days, selectedDate]);
 
   useEffect(() => {
-    if (status !== "ready" || !mapInstance.current) return;
+    if (status !== "ready" && status !== "no_points") return;
+    if (!mapInstance.current) return;
 
-    overlaysRef.current.forEach((o) => o.setMap(null));
-    overlaysRef.current = [];
+    let cancelled = false;
 
-    const bounds = new window.google.maps.LatLngBounds();
-    let count = 0;
+    async function render() {
+      overlaysRef.current.forEach((o) => o.setMap(null));
+      overlaysRef.current = [];
+      setDayNotice("");
 
-    const targetDays = selectedDate
-      ? days.filter((d) => d.date === selectedDate)
-      : days;
+      const bounds = new window.google.maps.LatLngBounds();
+      let count = 0;
 
-    targetDays.forEach((day) => {
-      day.drivers?.forEach((d, driverIdx) => {
-        const color = DRIVER_COLORS[driverIdx % DRIVER_COLORS.length];
-        const path = [];
-
-        d.stops.forEach((stop, stopIdx) => {
-          if (stop.lat == null || stop.lng == null) return;
-          const position = { lat: stop.lat, lng: stop.lng };
-          path.push(position);
-
-          const marker = new window.google.maps.Marker({
-            position,
-            map: mapInstance.current,
-            title: selectedDate
-              ? `${d.driver} ${stopIdx + 1}: ${stop.name}様`
-              : `${day.date} ${stop.name}様 (${d.driver})`,
-            label: {
-              text: String(stopIdx + 1),
-              color: "#fff",
-              fontSize: "10px",
-            },
-            icon: {
-              path: window.google.maps.SymbolPath.CIRCLE,
-              scale: 10,
-              fillColor: color,
-              fillOpacity: 1,
-              strokeColor: "#fff",
-              strokeWeight: 2,
-            },
+      if (!selectedDate) {
+        // 全日程まとめて: 従来通りピンのみ表示(ルート線なし)
+        days.forEach((day, dayIdx) => {
+          const color = DRIVER_COLORS[dayIdx % DRIVER_COLORS.length];
+          day.drivers?.forEach((d) => {
+            d.stops.forEach((stop) => {
+              if (stop.lat == null || stop.lng == null) return;
+              const position = { lat: stop.lat, lng: stop.lng };
+              const marker = new window.google.maps.Marker({
+                position,
+                map: mapInstance.current,
+                title: `${day.date} ${stop.name}様 (${d.driver})`,
+                label: { text: String(dayIdx + 1), color: "#fff", fontSize: "10px" },
+                icon: {
+                  path: window.google.maps.SymbolPath.CIRCLE,
+                  scale: 10,
+                  fillColor: color,
+                  fillOpacity: 1,
+                  strokeColor: "#fff",
+                  strokeWeight: 2,
+                },
+              });
+              overlaysRef.current.push(marker);
+              bounds.extend(position);
+              count++;
+            });
           });
-          overlaysRef.current.push(marker);
-          bounds.extend(position);
-          count++;
         });
+      } else {
+        const day = days.find((d) => d.date === selectedDate);
+        const drivers = (day?.drivers || []).filter((d) =>
+          d.stops.some((s) => s.lat != null && s.lng != null)
+        );
 
-        // 日付を選んでいる時だけ、ドライバーごとの巡回順に線を引く
-        if (selectedDate && path.length > 1) {
-          const polyline = new window.google.maps.Polyline({
-            path,
-            map: mapInstance.current,
-            strokeColor: color,
-            strokeOpacity: 0.8,
-            strokeWeight: 3,
-          });
-          overlaysRef.current.push(polyline);
+        if (drivers.length === 0) {
+          setDayNotice("この日は位置情報のある配達がまだ登録されていません");
         }
-      });
-    });
 
-    if (count === 0) {
-      setStatus("no_points");
-    } else {
-      mapInstance.current.fitBounds(bounds);
+        let depotMarkerPlaced = false;
+
+        for (let driverIdx = 0; driverIdx < drivers.length; driverIdx++) {
+          const d = drivers[driverIdx];
+          const color = DRIVER_COLORS[driverIdx % DRIVER_COLORS.length];
+          const validStops = d.stops.filter(
+            (s) => s.lat != null && s.lng != null
+          );
+
+          validStops.forEach((stop, idx) => {
+            const position = { lat: stop.lat, lng: stop.lng };
+            const marker = new window.google.maps.Marker({
+              position,
+              map: mapInstance.current,
+              title: `${d.driver} ${idx + 1}: ${stop.name}様`,
+              label: { text: String(idx + 1), color: "#fff", fontSize: "10px" },
+              icon: {
+                path: window.google.maps.SymbolPath.CIRCLE,
+                scale: 10,
+                fillColor: color,
+                fillOpacity: 1,
+                strokeColor: "#fff",
+                strokeWeight: 2,
+              },
+            });
+            overlaysRef.current.push(marker);
+            bounds.extend(position);
+            count++;
+          });
+
+          if (!depotAddress || validStops.length === 0) continue;
+
+          const destination = validStops[validStops.length - 1];
+          const waypoints = validStops.slice(0, -1).map((s) => ({
+            location: { lat: s.lat, lng: s.lng },
+            stopover: true,
+          }));
+
+          try {
+            const directionsService = new window.google.maps.DirectionsService();
+            const result = await directionsService.route({
+              origin: depotAddress,
+              destination: { lat: destination.lat, lng: destination.lng },
+              waypoints,
+              travelMode: window.google.maps.TravelMode.DRIVING,
+            });
+
+            if (cancelled) return;
+
+            const renderer = new window.google.maps.DirectionsRenderer({
+              map: mapInstance.current,
+              directions: result,
+              suppressMarkers: true,
+              preserveViewport: true,
+              polylineOptions: {
+                strokeColor: color,
+                strokeWeight: 4,
+                strokeOpacity: 0.75,
+              },
+            });
+            overlaysRef.current.push(renderer);
+
+            const routeBounds = result.routes[0]?.bounds;
+            if (routeBounds) bounds.union(routeBounds);
+
+            if (!depotMarkerPlaced) {
+              const startLoc = result.routes[0]?.legs?.[0]?.start_location;
+              if (startLoc) {
+                const depotMarker = new window.google.maps.Marker({
+                  position: startLoc,
+                  map: mapInstance.current,
+                  title: "出発地点(薬局)",
+                  icon: {
+                    path: window.google.maps.SymbolPath.BACKWARD_CLOSED_ARROW,
+                    scale: 5,
+                    fillColor: "#111827",
+                    fillOpacity: 1,
+                    strokeColor: "#fff",
+                    strokeWeight: 2,
+                  },
+                });
+                overlaysRef.current.push(depotMarker);
+                depotMarkerPlaced = true;
+              }
+            }
+          } catch (err) {
+            console.error("directions error:", err);
+            // ルート取得に失敗した場合はマーカーのみ残す(直線は引かない)
+          }
+        }
+      }
+
+      if (cancelled) return;
+
+      if (count === 0) {
+        setStatus("no_points");
+      } else {
+        setStatus("ready");
+        mapInstance.current.fitBounds(bounds);
+      }
     }
-  }, [days, status, selectedDate]);
+
+    render();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [days, status === "ready" || status === "no_points", selectedDate, depotAddress]);
 
   useEffect(() => {
     if (!mapInstance.current || !window.google?.maps) return;
-    // 拡大/縮小でコンテナサイズが変わるので、地図に再計算させる
     const timer = setTimeout(() => {
       window.google.maps.event.trigger(mapInstance.current, "resize");
     }, 50);
@@ -200,17 +290,11 @@ export default function MapPreview({ days }) {
   }
 
   return (
-    <div
-      style={expanded ? styles.wrapperExpanded : styles.wrapper}
-    >
+    <div style={expanded ? styles.wrapperExpanded : styles.wrapper}>
       <div style={styles.controlsRow}>
         <div style={styles.legend}>
           <button
-            style={
-              selectedDate === null
-                ? styles.dayButtonActive
-                : styles.dayButton
-            }
+            style={selectedDate === null ? styles.dayButtonActive : styles.dayButton}
             onClick={() => setSelectedDate(null)}
           >
             全日程
@@ -237,15 +321,12 @@ export default function MapPreview({ days }) {
         </button>
       </div>
 
-      <div
-        ref={mapRef}
-        style={expanded ? styles.mapExpanded : styles.map}
-      />
-      {status === "no_points" && (
-        <p style={styles.notice}>
-          位置情報が取得できた配達先がまだありません
-        </p>
+      <div ref={mapRef} style={expanded ? styles.mapExpanded : styles.map} />
+
+      {status === "no_points" && !dayNotice && (
+        <p style={styles.notice}>位置情報が取得できた配達先がまだありません</p>
       )}
+      {dayNotice && <p style={styles.notice}>{dayNotice}</p>}
     </div>
   );
 }
@@ -269,11 +350,7 @@ const styles = {
     gap: "0.5rem",
     marginBottom: "0.5rem",
   },
-  legend: {
-    display: "flex",
-    flexWrap: "wrap",
-    gap: "0.4rem",
-  },
+  legend: { display: "flex", flexWrap: "wrap", gap: "0.4rem" },
   dayButton: {
     padding: "0.3rem 0.6rem",
     borderRadius: "999px",
@@ -309,11 +386,6 @@ const styles = {
     overflow: "hidden",
     boxShadow: "0 1px 6px rgba(0,0,0,0.06)",
   },
-  mapExpanded: {
-    width: "100%",
-    flex: 1,
-    borderRadius: "10px",
-    overflow: "hidden",
-  },
-  notice: { color: "#888", fontSize: "0.85rem" },
+  mapExpanded: { width: "100%", flex: 1, borderRadius: "10px", overflow: "hidden" },
+  notice: { color: "#888", fontSize: "0.85rem", marginTop: "0.4rem" },
 };

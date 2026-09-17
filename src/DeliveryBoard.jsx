@@ -30,6 +30,7 @@ function emptyForm(date) {
 export default function DeliveryBoard() {
   const [startDate, setStartDate] = useState(todayStr());
   const [days, setDays] = useState([]);
+  const [depotAddress, setDepotAddress] = useState(null);
   const [destinations, setDestinations] = useState([]);
   const [knownDrivers, setKnownDrivers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -47,6 +48,7 @@ export default function DeliveryBoard() {
     );
     const data = await res.json();
     setDays(data.days || []);
+    if (data.depot_address) setDepotAddress(data.depot_address);
     if (!silent) setLoading(false);
   }
 
@@ -305,7 +307,7 @@ export default function DeliveryBoard() {
         </div>
       )}
 
-      {!loading && <MapPreview days={days} />}
+      {!loading && <MapPreview days={days} depotAddress={depotAddress} />}
 
       <FloatingAddButton onClick={() => openAddModal()} />
 
