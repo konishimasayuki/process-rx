@@ -59,6 +59,26 @@ async function buildDayView(date, depotGeo) {
   }
 
   const drivers = Object.entries(byDriver).map(([driver, driverEntries]) => {
+    const hasManualOrder = driverEntries.some((e) => e.manual_order != null);
+
+    if (hasManualOrder) {
+      const sorted = [...driverEntries].sort((a, b) => {
+        const ao = a.manual_order ?? Infinity;
+        const bo = b.manual_order ?? Infinity;
+        return ao - bo;
+      });
+      const stops = sorted
+        .filter((e) => e.destination)
+        .map((e) => ({
+          ...e.destination,
+          entry_id: e.id,
+          time_type: e.time_type,
+          time_value: e.time_value,
+        }));
+      const mapsUrl = stops.length ? buildGoogleMapsRouteUrl(stops) : null;
+      return { driver, stops, routable: true, manual: true, maps_url: mapsUrl };
+    }
+
     const stops = driverEntries
       .filter((e) => e.destination)
       .map((e) => ({
@@ -71,7 +91,7 @@ async function buildDayView(date, depotGeo) {
     const { ordered, routable } = orderStopsByNearestNeighbor(depotGeo, stops);
     const mapsUrl = routable ? buildGoogleMapsRouteUrl(ordered) : null;
 
-    return { driver, stops: ordered, routable, maps_url: mapsUrl };
+    return { driver, stops: ordered, routable, manual: false, maps_url: mapsUrl };
   });
 
   return { date, drivers };
@@ -141,6 +161,7 @@ export default async function handler(req, res) {
       driver: driverName,
       time_type,
       time_value: time_type === "FIXED" ? time_value : null,
+      manual_order: null,
       created_at: new Date().toISOString(),
     };
 
@@ -151,6 +172,70 @@ export default async function handler(req, res) {
     }
 
     res.status(200).json({ status: "ok", entry: record });
+    return;
+  }
+
+  if (req.method === "PUT") {
+    // ドラッグによる並び替え・日付/ドライバー変更。
+    // new_index未指定の場合は末尾に追加する。
+    const { id, new_date, new_driver, new_index } = req.body || {};
+    if (!id) {
+      res.status(400).json({ error: "idは必須です" });
+      return;
+    }
+
+    const raw = await redis.get(`board_entry:${id}`);
+    if (!raw) {
+      res.status(404).json({ error: "該当データが見つかりません" });
+      return;
+    }
+    const entry = typeof raw === "string" ? JSON.parse(raw) : raw;
+
+    const targetDate = new_date || entry.date;
+    const targetDriver = new_driver !== undefined ? new_driver : entry.driver || "";
+    const dateChanged = targetDate !== entry.date;
+
+    const targetDateIds = await redis.smembers(`board:date:${targetDate}`);
+    const targetDateKeys = targetDateIds.map((i) => `board_entry:${i}`);
+    const targetDateRaw = targetDateKeys.length
+      ? await redis.mget(...targetDateKeys)
+      : [];
+    const targetGroup = targetDateRaw
+      .filter(Boolean)
+      .map((r) => (typeof r === "string" ? JSON.parse(r) : r))
+      .filter((e) => (e.driver || "") === targetDriver && e.id !== id);
+
+    targetGroup.sort((a, b) => {
+      const ao = a.manual_order ?? Infinity;
+      const bo = b.manual_order ?? Infinity;
+      if (ao !== bo) return ao - bo;
+      return (a.created_at || "").localeCompare(b.created_at || "");
+    });
+
+    const movedEntry = { ...entry, date: targetDate, driver: targetDriver };
+    const insertIndex = Math.max(
+      0,
+      Math.min(new_index ?? targetGroup.length, targetGroup.length)
+    );
+    targetGroup.splice(insertIndex, 0, movedEntry);
+
+    for (let i = 0; i < targetGroup.length; i++) {
+      targetGroup[i].manual_order = i;
+      await redis.set(
+        `board_entry:${targetGroup[i].id}`,
+        JSON.stringify(targetGroup[i])
+      );
+    }
+
+    if (dateChanged) {
+      await redis.srem(`board:date:${entry.date}`, id);
+      await redis.sadd(`board:date:${targetDate}`, id);
+    }
+    if (targetDriver) {
+      await redis.sadd("drivers:known", targetDriver);
+    }
+
+    res.status(200).json({ status: "ok" });
     return;
   }
 
@@ -167,5 +252,5 @@ export default async function handler(req, res) {
     return;
   }
 
-  res.status(405).json({ error: "GET/POST/DELETEのみ対応しています" });
+  res.status(405).json({ error: "GET/POST/PUT/DELETEのみ対応しています" });
 }

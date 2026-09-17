@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Modal from "./Modal.jsx";
 import FloatingAddButton from "./FloatingAddButton.jsx";
 
@@ -16,23 +16,27 @@ function formatDayHeader(dateStr) {
   return `${d.getMonth() + 1}/${d.getDate()}(${weekdays[d.getDay()]})`;
 }
 
-const EMPTY_FORM = {
-  destination_id: "",
-  date: todayStr(),
-  driver: "",
-  time_type: "ALL",
-  time_value: "",
-};
+function emptyForm(date) {
+  return {
+    destination_id: "",
+    date: date || todayStr(),
+    driver: "",
+    time_type: "ALL",
+    time_value: "",
+  };
+}
 
 export default function DeliveryBoard() {
-  const [startDate] = useState(todayStr());
+  const [startDate, setStartDate] = useState(todayStr());
   const [days, setDays] = useState([]);
   const [destinations, setDestinations] = useState([]);
   const [knownDrivers, setKnownDrivers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
-  const [form, setForm] = useState(EMPTY_FORM);
+  const [form, setForm] = useState(emptyForm());
+  const [draggingId, setDraggingId] = useState(null);
+  const dragInfo = useRef(null);
 
   async function loadWeek(silent) {
     if (!silent) setLoading(true);
@@ -59,12 +63,16 @@ export default function DeliveryBoard() {
   useEffect(() => {
     loadDestinations();
     loadDrivers();
-    loadWeek();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function openAddModal() {
-    setForm(EMPTY_FORM);
+  useEffect(() => {
+    loadWeek();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startDate]);
+
+  function openAddModal(date) {
+    setForm(emptyForm(date));
     setError("");
     setModalOpen(true);
   }
@@ -115,72 +123,183 @@ export default function DeliveryBoard() {
     return "いつでも";
   }
 
+  // ==== ドラッグ&ドロップ(上下入れ替え/日付変更) ====
+  function handleHandlePointerDown(e, entryId, date, driver) {
+    e.preventDefault();
+    dragInfo.current = { entryId, sourceDate: date, sourceDriver: driver };
+    setDraggingId(entryId);
+    window.addEventListener("pointermove", handlePointerMoveNoop);
+    window.addEventListener("pointerup", handlePointerUp, { once: true });
+  }
+
+  function handlePointerMoveNoop() {
+    // 実際の判定はpointerup時にelementFromPointで行うため、ここでは何もしない
+  }
+
+  async function handlePointerUp(e) {
+    window.removeEventListener("pointermove", handlePointerMoveNoop);
+    const drag = dragInfo.current;
+    dragInfo.current = null;
+    setDraggingId(null);
+    if (!drag) return;
+
+    const clientX = e.clientX ?? e.changedTouches?.[0]?.clientX;
+    const clientY = e.clientY ?? e.changedTouches?.[0]?.clientY;
+    if (clientX == null || clientY == null) return;
+
+    const el = document.elementFromPoint(clientX, clientY);
+    if (!el) return;
+
+    const dayEl = el.closest("[data-day-date]");
+    if (!dayEl) return;
+    const targetDate = dayEl.getAttribute("data-day-date");
+
+    const driverEl = el.closest("[data-driver-group]");
+    const targetDriver = driverEl
+      ? driverEl.getAttribute("data-driver-group")
+      : drag.sourceDriver;
+
+    let newIndex;
+    if (driverEl) {
+      const stopEl = el.closest("[data-entry-id]");
+      const siblings = Array.from(
+        driverEl.querySelectorAll("[data-entry-id]")
+      );
+      if (stopEl && siblings.includes(stopEl)) {
+        newIndex = siblings.indexOf(stopEl);
+      } else {
+        newIndex = siblings.length;
+      }
+    }
+
+    if (
+      targetDate === drag.sourceDate &&
+      targetDriver === drag.sourceDriver &&
+      newIndex === undefined
+    ) {
+      return; // 変化なし
+    }
+
+    await fetch("/api/delivery-board", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: drag.entryId,
+        new_date: targetDate,
+        new_driver: targetDriver,
+        new_index: newIndex,
+      }),
+    });
+    loadWeek(true);
+  }
+
   return (
     <div style={styles.container}>
-      <h2 style={styles.heading}>配達ボード</h2>
+      <div style={styles.headerRow}>
+        <h2 style={styles.heading}>配達ボード</h2>
+        <input
+          style={styles.calendarInput}
+          type="date"
+          value={startDate}
+          onChange={(e) => setStartDate(e.target.value)}
+        />
+      </div>
 
       {loading ? (
         <p>読み込み中...</p>
       ) : (
         <div style={styles.weekRow}>
           {days.map((day) => (
-            <div key={day.date} style={styles.dayColumn}>
+            <div
+              key={day.date}
+              data-day-date={day.date}
+              style={styles.dayColumn}
+            >
               <div style={styles.dayHeader}>{formatDayHeader(day.date)}</div>
 
-              {!day.drivers?.length ? (
-                <p style={styles.muted}>配達なし</p>
-              ) : (
-                day.drivers.map((d) => (
-                  <div key={d.driver} style={styles.driverBlock}>
-                    <div style={styles.driverHeader}>
-                      <span style={styles.driverName}>{d.driver}</span>
-                      {d.maps_url ? (
-                        <a
-                          style={styles.mapsLink}
-                          href={d.maps_url}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          地図
-                        </a>
-                      ) : (
-                        <span style={styles.geoWarning}>位置未取得</span>
-                      )}
-                    </div>
-                    <ol style={styles.stopList}>
-                      {d.stops.map((stop, idx) => (
-                        <li key={stop.entry_id} style={styles.stopItem}>
-                          <span style={styles.stopOrder}>{idx + 1}</span>
-                          <div style={styles.stopBody}>
-                            <div style={styles.stopNameRow}>
-                              {stop.facility_name && (
-                                <span style={styles.facilityTag}>
-                                  {stop.facility_name}
-                                </span>
-                              )}
-                              <strong>{stop.name}様</strong>
-                              <span style={styles.timeTag}>{timeLabel(stop)}</span>
-                            </div>
-                            <div style={styles.address}>{stop.address}</div>
-                          </div>
-                          <button
-                            style={styles.removeButton}
-                            onClick={() => handleRemove(stop.entry_id, day.date)}
-                          >
-                            ×
-                          </button>
-                        </li>
-                      ))}
-                    </ol>
+              {day.drivers?.map((d) => (
+                <div
+                  key={d.driver}
+                  data-driver-group={d.driver}
+                  style={styles.driverBlock}
+                >
+                  <div style={styles.driverHeader}>
+                    <span style={styles.driverName}>{d.driver}</span>
+                    {d.maps_url ? (
+                      <a
+                        style={styles.mapsLink}
+                        href={d.maps_url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        地図
+                      </a>
+                    ) : (
+                      <span style={styles.geoWarning}>位置未取得</span>
+                    )}
                   </div>
-                ))
-              )}
+                  <ol style={styles.stopList}>
+                    {d.stops.map((stop, idx) => (
+                      <li
+                        key={stop.entry_id}
+                        data-entry-id={stop.entry_id}
+                        style={{
+                          ...styles.stopItem,
+                          opacity: draggingId === stop.entry_id ? 0.4 : 1,
+                        }}
+                      >
+                        <span
+                          style={styles.dragHandle}
+                          onPointerDown={(e) =>
+                            handleHandlePointerDown(
+                              e,
+                              stop.entry_id,
+                              day.date,
+                              d.driver
+                            )
+                          }
+                        >
+                          ⠿
+                        </span>
+                        <span style={styles.stopOrder}>{idx + 1}</span>
+                        <div style={styles.stopBody}>
+                          <div style={styles.stopNameRow}>
+                            {stop.facility_name && (
+                              <span style={styles.facilityTag}>
+                                {stop.facility_name}
+                              </span>
+                            )}
+                            <strong>{stop.name}様</strong>
+                            <span style={styles.timeTag}>
+                              {timeLabel(stop)}
+                            </span>
+                          </div>
+                          <div style={styles.address}>{stop.address}</div>
+                        </div>
+                        <button
+                          style={styles.removeButton}
+                          onClick={() => handleRemove(stop.entry_id, day.date)}
+                        >
+                          ×
+                        </button>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              ))}
+
+              <button
+                style={styles.emptyAddButton}
+                onClick={() => openAddModal(day.date)}
+              >
+                + 追加
+              </button>
             </div>
           ))}
         </div>
       )}
 
-      <FloatingAddButton onClick={openAddModal} />
+      <FloatingAddButton onClick={() => openAddModal()} />
 
       {modalOpen && (
         <Modal title="配達をボードに追加" onClose={() => setModalOpen(false)}>
@@ -255,7 +374,19 @@ export default function DeliveryBoard() {
 
 const styles = {
   container: { padding: "1rem", maxWidth: "100%", margin: "0 auto" },
-  heading: { fontSize: "1.2rem", marginBottom: "0.8rem" },
+  headerRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: "0.8rem",
+  },
+  heading: { fontSize: "1.2rem", margin: 0 },
+  calendarInput: {
+    padding: "0.4rem 0.6rem",
+    borderRadius: "6px",
+    border: "1px solid #ccc",
+    fontSize: "0.85rem",
+  },
   input: {
     padding: "0.6rem",
     borderRadius: "6px",
@@ -273,7 +404,6 @@ const styles = {
     cursor: "pointer",
   },
   error: { color: "#dc2626", fontSize: "0.85rem", margin: 0 },
-  muted: { color: "#888", fontSize: "0.85rem" },
   weekRow: {
     display: "flex",
     gap: "0.8rem",
@@ -288,6 +418,8 @@ const styles = {
     padding: "0.8rem",
     boxShadow: "0 1px 6px rgba(0,0,0,0.06)",
     flexShrink: 0,
+    display: "flex",
+    flexDirection: "column",
   },
   dayHeader: {
     fontWeight: 700,
@@ -317,9 +449,17 @@ const styles = {
   stopItem: {
     display: "flex",
     alignItems: "flex-start",
-    gap: "0.4rem",
+    gap: "0.3rem",
     borderTop: "1px dashed #eee",
     paddingTop: "0.4rem",
+  },
+  dragHandle: {
+    cursor: "grab",
+    color: "#bbb",
+    fontSize: "0.9rem",
+    touchAction: "none",
+    flexShrink: 0,
+    paddingTop: "0.1rem",
   },
   stopOrder: {
     background: "#2563eb",
@@ -357,5 +497,16 @@ const styles = {
     color: "#dc2626",
     cursor: "pointer",
     flexShrink: 0,
+  },
+  emptyAddButton: {
+    marginTop: "0.4rem",
+    padding: "0.5rem",
+    borderRadius: "8px",
+    border: "1px dashed #ccc",
+    background: "#f9fafb",
+    color: "#999",
+    fontSize: "0.8rem",
+    cursor: "pointer",
+    flex: 1,
   },
 };
