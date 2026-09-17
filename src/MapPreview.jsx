@@ -8,7 +8,7 @@ function loadGoogleMapsScript(apiKey) {
 
   mapsScriptPromise = new Promise((resolve, reject) => {
     const script = document.createElement("script");
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&loading=async`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}`;
     script.async = true;
     script.onload = () => resolve();
     script.onerror = () => reject(new Error("Google Mapsの読み込みに失敗しました"));
@@ -42,36 +42,45 @@ export default function MapPreview({ days }) {
       if (!cancelled) setStatus("auth_error");
     };
 
+    const timeoutId = setTimeout(() => {
+      setStatus((prev) => (prev === "loading" ? "error" : prev));
+    }, 8000);
+
     async function init() {
-      const res = await fetch("/api/maps-key");
-      const data = await res.json();
-      if (cancelled) return;
-
-      if (!data.key) {
-        setStatus("no_key");
-        return;
-      }
-
       try {
-        await loadGoogleMapsScript(data.key);
-      } catch {
-        if (!cancelled) setStatus("error");
-        return;
-      }
-      if (cancelled) return;
+        const res = await fetch("/api/maps-key");
+        const data = await res.json();
+        if (cancelled) return;
 
-      if (!mapInstance.current && mapRef.current) {
-        mapInstance.current = new window.google.maps.Map(mapRef.current, {
-          center: { lat: 33.589, lng: 130.401 }, // 福岡付近をデフォルト中心に
-          zoom: 10,
-        });
+        if (!data.key) {
+          setStatus("no_key");
+          return;
+        }
+
+        await loadGoogleMapsScript(data.key);
+        if (cancelled) return;
+
+        if (!window.google?.maps?.Map) {
+          throw new Error("google.maps.Mapが利用できません");
+        }
+
+        if (!mapInstance.current && mapRef.current) {
+          mapInstance.current = new window.google.maps.Map(mapRef.current, {
+            center: { lat: 33.589, lng: 130.401 }, // 福岡付近をデフォルト中心に
+            zoom: 10,
+          });
+        }
+        setStatus("ready");
+      } catch (err) {
+        console.error("MapPreview init error:", err);
+        if (!cancelled) setStatus("error");
       }
-      setStatus("ready");
     }
 
     init();
     return () => {
       cancelled = true;
+      clearTimeout(timeoutId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
