@@ -320,7 +320,6 @@ const styles = {
     borderRight: "1px solid #e5e7eb",
     padding: "1.2rem 0.8rem",
     flexDirection: "column",
-    justifyContent: "space-between",
     zIndex: 10,
   },
 
@@ -363,7 +362,6 @@ const styles = {
     padding: "1.2rem 0.8rem",
     display: "flex",
     flexDirection: "column",
-    justifyContent: "space-between",
     boxShadow: "2px 0 12px rgba(0,0,0,0.15)",
   },
 
@@ -405,6 +403,7 @@ const styles = {
     cursor: "pointer",
   },
   logoutButton: {
+    marginTop: "auto",
     padding: "0.5rem",
     borderRadius: "6px",
     border: "1px solid #ccc",
