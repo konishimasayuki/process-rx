@@ -23,7 +23,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
-    const { facility_name, name, address, notes } = req.body || {};
+    const { facility_name, name, yomi, address, notes } = req.body || {};
 
     if (!name || !address) {
       res.status(400).json({ error: "氏名と住所は必須です" });
@@ -36,6 +36,7 @@ export default async function handler(req, res) {
       id,
       facility_name: facility_name || "",
       name,
+      yomi: yomi || "",
       address,
       notes: notes || "",
       lat: geo?.lat ?? null,
@@ -51,7 +52,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "PUT") {
-    const { id, facility_name, name, address, notes } = req.body || {};
+    const { id, facility_name, name, yomi, address, notes } = req.body || {};
     if (!id) {
       res.status(400).json({ error: "idは必須です" });
       return;
@@ -70,6 +71,7 @@ export default async function handler(req, res) {
       ...existing,
       facility_name: facility_name ?? existing.facility_name,
       name: name ?? existing.name,
+      yomi: yomi ?? existing.yomi,
       address: address ?? existing.address,
       notes: notes ?? existing.notes,
       updated_at: new Date().toISOString(),

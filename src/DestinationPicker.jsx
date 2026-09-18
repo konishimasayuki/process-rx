@@ -39,7 +39,7 @@ export default function DestinationPicker({ destinations, value, onChange }) {
     if (!q) return destinations.slice(0, 50);
     return destinations
       .filter((d) =>
-        [d.facility_name, d.name].filter(Boolean).some((f) =>
+        [d.facility_name, d.name, d.yomi].filter(Boolean).some((f) =>
           normalizeKana(f).includes(q)
         )
       )

@@ -1,8 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Modal from "./Modal.jsx";
 import FloatingAddButton from "./FloatingAddButton.jsx";
 
-const EMPTY_FORM = { facility_name: "", name: "", address: "", notes: "" };
+const EMPTY_FORM = { facility_name: "", name: "", yomi: "", address: "", notes: "" };
+
+function normalizeKana(str) {
+  return (str || "")
+    .toLowerCase()
+    .replace(/[\u30a1-\u30f6]/g, (ch) =>
+      String.fromCharCode(ch.charCodeAt(0) - 0x60)
+    );
+}
 
 export default function DestinationsList() {
   const [destinations, setDestinations] = useState([]);
@@ -13,6 +21,9 @@ export default function DestinationsList() {
   const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState("");
+  const fileInputRef = useRef(null);
 
   async function load() {
     setLoading(true);
@@ -27,12 +38,12 @@ export default function DestinationsList() {
   }, []);
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = normalizeKana(search.trim());
     if (!q) return destinations;
     return destinations.filter((d) =>
-      [d.facility_name, d.name, d.address, d.notes]
+      [d.facility_name, d.name, d.yomi, d.address, d.notes]
         .filter(Boolean)
-        .some((field) => field.toLowerCase().includes(q))
+        .some((field) => normalizeKana(field).includes(q))
     );
   }, [destinations, search]);
 
@@ -48,6 +59,7 @@ export default function DestinationsList() {
     setForm({
       facility_name: dest.facility_name || "",
       name: dest.name || "",
+      yomi: dest.yomi || "",
       address: dest.address || "",
       notes: dest.notes || "",
     });
@@ -106,16 +118,81 @@ export default function DestinationsList() {
     setModalOpen(false);
   }
 
+  function handleExport() {
+    window.open("/api/destinations-export", "_blank");
+  }
+
+  function handleImportClick() {
+    fileInputRef.current?.click();
+  }
+
+  function handleImportFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setImporting(true);
+    setImportResult("");
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const res = await fetch("/api/destinations-import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ csv: reader.result }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setImportResult(data.error || "インポートに失敗しました");
+        } else {
+          setImportResult(
+            `完了: 新規${data.created}件 / 更新${data.updated}件` +
+              (data.skipped ? ` / スキップ${data.skipped}件` : "")
+          );
+          load();
+        }
+      } catch {
+        setImportResult("インポートに失敗しました");
+      }
+      setImporting(false);
+      e.target.value = "";
+    };
+    reader.readAsText(file, "utf-8");
+  }
+
   return (
     <div style={styles.container}>
       <h2 style={styles.heading}>配達先一覧</h2>
 
-      <input
-        style={styles.search}
-        placeholder="施設名・氏名・住所・備考で検索"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-      />
+      <div style={styles.toolbarRow}>
+        <input
+          style={styles.search}
+          placeholder="施設名・氏名・ヨミ・住所・備考で検索"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <div style={styles.csvButtons}>
+          <button style={styles.csvButton} onClick={handleExport}>
+            CSV書き出し
+          </button>
+          <button
+            style={styles.csvButton}
+            onClick={handleImportClick}
+            disabled={importing}
+          >
+            {importing ? "取込中..." : "CSV取込"}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            style={{ display: "none" }}
+            onChange={handleImportFile}
+          />
+        </div>
+      </div>
+
+      {importResult && <p style={styles.importResult}>{importResult}</p>}
 
       {loading ? (
         <p>読み込み中...</p>
@@ -131,6 +208,7 @@ export default function DestinationsList() {
             >
               <span style={styles.rowFacility}>{dest.facility_name || "—"}</span>
               <span style={styles.rowName}>{dest.name}様</span>
+              {dest.yomi && <span style={styles.rowYomi}>{dest.yomi}</span>}
               <span style={styles.rowAddress}>{dest.address}</span>
               <span style={styles.rowNotes}>{dest.notes}</span>
               {dest.lat == null && <span style={styles.geoWarning}>位置未取得</span>}
@@ -158,6 +236,12 @@ export default function DestinationsList() {
               placeholder="氏名"
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
+            />
+            <input
+              style={styles.input}
+              placeholder="ヨミ(任意・検索用)"
+              value={form.yomi}
+              onChange={(e) => setForm({ ...form, yomi: e.target.value })}
             />
             <input
               style={styles.input}
@@ -198,15 +282,38 @@ export default function DestinationsList() {
 const styles = {
   container: { padding: "1rem", maxWidth: "100%" },
   heading: { fontSize: "1.2rem", marginBottom: "0.8rem" },
+  toolbarRow: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: "0.5rem",
+    marginBottom: "0.5rem",
+    alignItems: "center",
+  },
   search: {
-    width: "100%",
+    flex: 1,
+    minWidth: "200px",
     maxWidth: "480px",
     padding: "0.6rem",
     borderRadius: "8px",
     border: "1px solid #ccc",
     fontSize: "0.95rem",
-    marginBottom: "1rem",
     boxSizing: "border-box",
+  },
+  csvButtons: { display: "flex", gap: "0.4rem" },
+  csvButton: {
+    padding: "0.5rem 0.8rem",
+    borderRadius: "6px",
+    border: "1px solid #ccc",
+    background: "#fff",
+    color: "#333",
+    fontSize: "0.8rem",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  },
+  importResult: {
+    fontSize: "0.85rem",
+    color: "#16a34a",
+    marginBottom: "0.8rem",
   },
   muted: { color: "#888" },
   list: {
@@ -238,6 +345,7 @@ const styles = {
   },
   rowFacility: { color: "#2563eb", flexShrink: 0, minWidth: "80px" },
   rowName: { fontWeight: 600, flexShrink: 0, minWidth: "90px" },
+  rowYomi: { color: "#999", fontSize: "0.75rem", flexShrink: 0, minWidth: "70px" },
   rowAddress: { color: "#555", flex: 1, minWidth: "160px" },
   rowNotes: { color: "#999", flexShrink: 0, maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis" },
   geoWarning: { color: "#d97706", fontSize: "0.7rem", flexShrink: 0 },
