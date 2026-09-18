@@ -227,9 +227,16 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "PUT") {
-    // ドラッグ/手動操作による並び替え・日付移動。
+    // ドラッグ/手動操作による並び替え・日付移動、または単純な内容編集(時間帯・ドライバー名等)。
     // new_date === "unassigned" のとき未割り当てプールへ移動する。
-    const { id, new_date, new_driver, new_index } = req.body || {};
+    const {
+      id,
+      new_date,
+      new_driver,
+      new_index,
+      time_type,
+      time_value,
+    } = req.body || {};
     if (!id) {
       res.status(400).json({ error: "idは必須です" });
       return;
@@ -241,6 +248,24 @@ export default async function handler(req, res) {
       return;
     }
     const entry = typeof raw === "string" ? JSON.parse(raw) : raw;
+
+    const dateOrDriverChanged =
+      (new_date !== undefined && new_date !== (entry.date ?? null) && !(new_date === "unassigned" && entry.date === null)) ||
+      (new_driver !== undefined && new_driver !== (entry.driver || ""));
+    const reorderRequested = new_index !== undefined;
+
+    if (!dateOrDriverChanged && !reorderRequested) {
+      // 日付・ドライバー・並び順は変えず、時間帯などの内容だけ更新する
+      const updated = { ...entry };
+      if (time_type !== undefined) {
+        updated.time_type = time_type;
+        updated.time_value = time_type === "FIXED" ? time_value : null;
+      }
+      await redis.set(`board_entry:${id}`, JSON.stringify(updated));
+      res.status(200).json({ status: "ok" });
+      return;
+    }
+
     const sourceGroupKey = entry.date ? `board:date:${entry.date}` : UNASSIGNED_KEY;
 
     const targetIsUnassigned = new_date === "unassigned";
@@ -258,6 +283,10 @@ export default async function handler(req, res) {
         driver: targetDriver,
         manual_order: null,
       };
+      if (time_type !== undefined) {
+        movedEntry.time_type = time_type;
+        movedEntry.time_value = time_type === "FIXED" ? time_value : null;
+      }
       await redis.set(`board_entry:${id}`, JSON.stringify(movedEntry));
       if (groupChanged) {
         await redis.srem(sourceGroupKey, id);
@@ -286,6 +315,10 @@ export default async function handler(req, res) {
       due_date: null,
       driver: targetDriver,
     };
+    if (time_type !== undefined) {
+      movedEntry.time_type = time_type;
+      movedEntry.time_value = time_type === "FIXED" ? time_value : null;
+    }
     const insertIndex = Math.max(
       0,
       Math.min(new_index ?? targetGroup.length, targetGroup.length)

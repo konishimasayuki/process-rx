@@ -49,6 +49,8 @@ export default function DeliveryBoard() {
   const [draggingId, setDraggingId] = useState(null);
   const [dragPreview, setDragPreview] = useState(null);
   const [lineSendStatus, setLineSendStatus] = useState({});
+  const [editModal, setEditModal] = useState(null); // {entryId, date, driver, time_type, time_value}
+  const [editError, setEditError] = useState("");
   const dragInfo = useRef(null);
 
   async function loadWeek(silent) {
@@ -194,6 +196,56 @@ export default function DeliveryBoard() {
     setLineSendStatus((prev) => ({ ...prev, [key]: "sent" }));
   }
 
+  function openEditModal(stop, date, driver) {
+    setEditModal({
+      entryId: stop.entry_id,
+      facilityName: stop.facility_name,
+      name: stop.name,
+      address: stop.address,
+      date: date === "unassigned" ? "" : date,
+      driver: driver || "",
+      time_type: stop.time_type || "ALL",
+      time_value: stop.time_value || "",
+    });
+    setEditError("");
+  }
+
+  async function handleEditSubmit(e) {
+    e.preventDefault();
+    setEditError("");
+
+    if (editModal.time_type === "FIXED" && !editModal.time_value) {
+      setEditError("時間指定の場合は時刻を入力してください");
+      return;
+    }
+
+    const payload = {
+      id: editModal.entryId,
+      new_driver: editModal.driver,
+      time_type: editModal.time_type,
+      time_value: editModal.time_value,
+    };
+    if (editModal.date) {
+      payload.new_date = editModal.date;
+    }
+
+    const res = await fetch("/api/delivery-board", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setEditError(data.error || "更新に失敗しました");
+      return;
+    }
+
+    setEditModal(null);
+    loadWeek(true);
+    loadDrivers();
+  }
+
   // ==== ドラッグ&ドロップ(上下入れ替え/日付変更/未割り当てへ) ====
   function handleHandlePointerDown(e, stop, date, driver) {
     e.preventDefault();
@@ -313,7 +365,12 @@ export default function DeliveryBoard() {
                     >
                       ⠿
                     </span>
-                    <div style={styles.stopBody}>
+                    <div
+                      style={styles.stopBody}
+                      onClick={() =>
+                        openEditModal(stop, "unassigned", stop.driver)
+                      }
+                    >
                       <div style={styles.stopNameRow}>
                         {stop.facility_name && (
                           <span style={styles.facilityTag}>
@@ -332,6 +389,7 @@ export default function DeliveryBoard() {
                         type="date"
                         style={styles.assignDateInput}
                         defaultValue=""
+                        onClick={(e) => e.stopPropagation()}
                         onChange={(e) =>
                           handleAssignDate(stop.entry_id, e.target.value)
                         }
@@ -339,7 +397,10 @@ export default function DeliveryBoard() {
                     </div>
                     <button
                       style={styles.removeButton}
-                      onClick={() => handleRemove(stop.entry_id, null)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleRemove(stop.entry_id, null);
+                      }}
                     >
                       ×
                     </button>
@@ -428,7 +489,10 @@ export default function DeliveryBoard() {
                           ⠿
                         </span>
                         <span style={styles.stopOrder}>{idx + 1}</span>
-                        <div style={styles.stopBody}>
+                        <div
+                          style={styles.stopBody}
+                          onClick={() => openEditModal(stop, day.date, d.driver)}
+                        >
                           <div style={styles.stopNameRow}>
                             {stop.facility_name && (
                               <span style={styles.facilityTag}>
@@ -444,7 +508,10 @@ export default function DeliveryBoard() {
                         </div>
                         <button
                           style={styles.removeButton}
-                          onClick={() => handleRemove(stop.entry_id, day.date)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemove(stop.entry_id, day.date);
+                          }}
                         >
                           ×
                         </button>
@@ -576,6 +643,83 @@ export default function DeliveryBoard() {
           </form>
         </Modal>
       )}
+
+      {editModal && (
+        <Modal title="配達内容を編集" onClose={() => setEditModal(null)}>
+          <form style={styles.form} onSubmit={handleEditSubmit}>
+            <div style={styles.editTargetInfo}>
+              {editModal.facilityName && (
+                <span style={styles.facilityTag}>{editModal.facilityName}</span>
+              )}
+              <strong>{editModal.name}様</strong>
+              <div style={styles.address}>{editModal.address}</div>
+            </div>
+
+            <label style={styles.editLabel}>
+              日付
+              <input
+                style={styles.input}
+                type="date"
+                value={editModal.date}
+                onChange={(e) =>
+                  setEditModal({ ...editModal, date: e.target.value })
+                }
+              />
+            </label>
+
+            <label style={styles.editLabel}>
+              ドライバー
+              <select
+                style={styles.input}
+                value={editModal.driver}
+                onChange={(e) =>
+                  setEditModal({ ...editModal, driver: e.target.value })
+                }
+              >
+                <option value="">未割当</option>
+                {knownDrivers.map((d) => (
+                  <option key={d.name} value={d.name}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label style={styles.editLabel}>
+              時間
+              <select
+                style={styles.input}
+                value={editModal.time_type}
+                onChange={(e) =>
+                  setEditModal({ ...editModal, time_type: e.target.value })
+                }
+              >
+                <option value="ALL">いつでも(ALL)</option>
+                <option value="AM">AM</option>
+                <option value="PM">PM</option>
+                <option value="FIXED">時間指定</option>
+              </select>
+            </label>
+
+            {editModal.time_type === "FIXED" && (
+              <input
+                style={styles.input}
+                type="time"
+                value={editModal.time_value}
+                onChange={(e) =>
+                  setEditModal({ ...editModal, time_value: e.target.value })
+                }
+              />
+            )}
+
+            {editError && <p style={styles.error}>{editError}</p>}
+
+            <button style={styles.button} type="submit">
+              保存
+            </button>
+          </form>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -633,6 +777,19 @@ const styles = {
     cursor: "pointer",
   },
   error: { color: "#dc2626", fontSize: "0.85rem", margin: 0 },
+  editTargetInfo: {
+    background: "#f9fafb",
+    borderRadius: "8px",
+    padding: "0.6rem",
+    fontSize: "0.85rem",
+  },
+  editLabel: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.3rem",
+    fontSize: "0.8rem",
+    color: "#555",
+  },
   muted: { color: "#888", fontSize: "0.8rem" },
   weekRow: {
     display: "flex",
@@ -724,7 +881,7 @@ const styles = {
     fontSize: "0.65rem",
     flexShrink: 0,
   },
-  stopBody: { flex: 1, minWidth: 0 },
+  stopBody: { flex: 1, minWidth: 0, cursor: "pointer" },
   stopNameRow: {
     fontSize: "0.8rem",
     display: "flex",
