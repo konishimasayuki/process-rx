@@ -49,6 +49,7 @@ export default function DeliveryBoard() {
   const [draggingId, setDraggingId] = useState(null);
   const [dragPreview, setDragPreview] = useState(null);
   const [lineSendStatus, setLineSendStatus] = useState({});
+  const [optimizeStatus, setOptimizeStatus] = useState({});
   const [editModal, setEditModal] = useState(null); // {entryId, date, driver, time_type, time_value}
   const [editError, setEditError] = useState("");
   const dragInfo = useRef(null);
@@ -167,6 +168,20 @@ export default function DeliveryBoard() {
     if (stop.time_type === "AM") return "AM";
     if (stop.time_type === "PM") return "PM";
     return "いつでも";
+  }
+
+  async function handleOptimize(date, driver) {
+    const key = `${date}|${driver}`;
+    setOptimizeStatus((prev) => ({ ...prev, [key]: "running" }));
+
+    await fetch("/api/delivery-board-optimize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date, driver }),
+    });
+
+    await loadWeek(true);
+    setOptimizeStatus((prev) => ({ ...prev, [key]: "done" }));
   }
 
   async function handleSendLine(date, d) {
@@ -438,18 +453,20 @@ export default function DeliveryBoard() {
                   <div style={styles.driverHeader}>
                     <span style={styles.driverName}>{d.driver}</span>
                     <div style={styles.driverHeaderActions}>
-                      {d.maps_url ? (
-                        <a
-                          style={styles.mapsLink}
-                          href={d.maps_url}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          地図
-                        </a>
-                      ) : (
+                      {!d.maps_url && (
                         <span style={styles.geoWarning}>位置未取得</span>
                       )}
+                      <button
+                        style={styles.optimizeButton}
+                        disabled={
+                          optimizeStatus[`${day.date}|${d.driver}`] === "running"
+                        }
+                        onClick={() => handleOptimize(day.date, d.driver)}
+                      >
+                        {optimizeStatus[`${day.date}|${d.driver}`] === "running"
+                          ? "最適化中..."
+                          : "順序最適化"}
+                      </button>
                       {d.driver && d.driver !== "未割当" && (
                         <button
                           style={styles.lineSendButton}
@@ -844,7 +861,15 @@ const styles = {
     margin: "0 0 0.3rem 0",
   },
   driverName: { fontSize: "0.85rem", fontWeight: 600 },
-  mapsLink: { fontSize: "0.7rem", color: "#2563eb" },
+  optimizeButton: {
+    fontSize: "0.65rem",
+    padding: "0.15rem 0.4rem",
+    borderRadius: "5px",
+    border: "1px solid #2563eb",
+    background: "#fff",
+    color: "#2563eb",
+    cursor: "pointer",
+  },
   geoWarning: { fontSize: "0.65rem", color: "#d97706" },
   stopList: {
     listStyle: "none",
