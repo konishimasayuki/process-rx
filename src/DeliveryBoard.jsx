@@ -23,6 +23,32 @@ function formatShort(dateStr) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
+const DRIVER_COLORS = [
+  "#2563eb",
+  "#dc2626",
+  "#16a34a",
+  "#d97706",
+  "#7c3aed",
+  "#0891b2",
+  "#db2777",
+];
+
+function hashCode(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+function driverColor(driverName, knownDrivers) {
+  if (!driverName || driverName === "未割当") return "#6b7280";
+  const idx = knownDrivers.findIndex((d) => d.name === driverName);
+  const i = idx === -1 ? hashCode(driverName) : idx;
+  return DRIVER_COLORS[i % DRIVER_COLORS.length];
+}
+
 function emptyForm(date) {
   return {
     destination_id: "",
@@ -451,13 +477,24 @@ export default function DeliveryBoard() {
                   style={styles.driverBlock}
                 >
                   <div style={styles.driverHeader}>
-                    <span style={styles.driverName}>{d.driver}</span>
+                    <span
+                      style={{
+                        ...styles.driverName,
+                        color: driverColor(d.driver, knownDrivers),
+                      }}
+                    >
+                      {d.driver}
+                    </span>
                     <div style={styles.driverHeaderActions}>
                       {!d.maps_url && (
                         <span style={styles.geoWarning}>位置未取得</span>
                       )}
                       <button
-                        style={styles.optimizeButton}
+                        style={{
+                          ...styles.optimizeButton,
+                          borderColor: driverColor(d.driver, knownDrivers),
+                          color: driverColor(d.driver, knownDrivers),
+                        }}
                         disabled={
                           optimizeStatus[`${day.date}|${d.driver}`] === "running"
                         }
@@ -505,7 +542,14 @@ export default function DeliveryBoard() {
                         >
                           ⠿
                         </span>
-                        <span style={styles.stopOrder}>{idx + 1}</span>
+                        <span
+                          style={{
+                            ...styles.stopOrder,
+                            background: driverColor(d.driver, knownDrivers),
+                          }}
+                        >
+                          {idx + 1}
+                        </span>
                         <div
                           style={styles.stopBody}
                           onClick={() => openEditModal(stop, day.date, d.driver)}
