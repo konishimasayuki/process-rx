@@ -75,6 +75,9 @@ export default function MapPreview({ days, depotAddress }) {
           mapInstance.current = new window.google.maps.Map(mapRef.current, {
             center: { lat: 33.589, lng: 130.401 },
             zoom: 10,
+            mapTypeControl: false,
+            streetViewControl: false,
+            fullscreenControl: false,
           });
         }
         setStatus("ready");
