@@ -7,6 +7,7 @@ import {
 } from "./_delivery-utils.js";
 
 const redis = Redis.fromEnv();
+const UNASSIGNED_KEY = "board:unassigned";
 
 let cachedDepotGeo = null;
 async function getDepotGeo() {
@@ -21,15 +22,18 @@ async function getDestination(destinationId) {
   return typeof raw === "string" ? JSON.parse(raw) : raw;
 }
 
-async function listEntriesForDate(date) {
-  const ids = await redis.smembers(`board:date:${date}`);
+async function listEntriesByIds(ids) {
   if (ids.length === 0) return [];
-
   const keys = ids.map((id) => `board_entry:${id}`);
   const rawItems = await redis.mget(...keys);
   return rawItems
     .filter(Boolean)
     .map((raw) => (typeof raw === "string" ? JSON.parse(raw) : raw));
+}
+
+async function listEntriesForDate(date) {
+  const ids = await redis.smembers(`board:date:${date}`);
+  return listEntriesByIds(ids);
 }
 
 function addDays(dateStr, n) {
@@ -97,6 +101,38 @@ async function buildDayView(date, depotGeo) {
   return { date, drivers };
 }
 
+async function buildUnassignedView() {
+  const ids = await redis.smembers(UNASSIGNED_KEY);
+  const entries = await listEntriesByIds(ids);
+
+  const withDestinations = await Promise.all(
+    entries.map(async (entry) => {
+      const destination = await getDestination(entry.destination_id);
+      return { ...entry, destination };
+    })
+  );
+
+  const items = withDestinations
+    .filter((e) => e.destination)
+    .map((e) => ({
+      ...e.destination,
+      entry_id: e.id,
+      driver: e.driver,
+      time_type: e.time_type,
+      time_value: e.time_value,
+      due_date: e.due_date || null,
+    }));
+
+  items.sort((a, b) => {
+    if (!a.due_date && !b.due_date) return 0;
+    if (!a.due_date) return 1;
+    if (!b.due_date) return -1;
+    return a.due_date.localeCompare(b.due_date);
+  });
+
+  return items;
+}
+
 export default async function handler(req, res) {
   if (req.method === "GET") {
     const { date, start_date, days } = req.query || {};
@@ -108,7 +144,10 @@ export default async function handler(req, res) {
       for (let i = 0; i < numDays; i++) {
         dayViews.push(await buildDayView(addDays(start_date, i), depotGeo));
       }
-      res.status(200).json({ depot_address: DEPOT_ADDRESS, days: dayViews });
+      const unassigned = await buildUnassignedView();
+      res
+        .status(200)
+        .json({ depot_address: DEPOT_ADDRESS, days: dayViews, unassigned });
       return;
     }
 
@@ -127,13 +166,20 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
-    const { destination_id, date, driver, time_type, time_value } = req.body || {};
+    const { destination_id, date, due_date, driver, time_type, time_value } =
+      req.body || {};
     const driverName = driver && driver.trim() ? driver.trim() : "";
 
-    if (!destination_id || !date || !time_type) {
+    if (!destination_id || !time_type) {
       res
         .status(400)
-        .json({ error: "destination_id, date, time_typeは必須です" });
+        .json({ error: "destination_id, time_typeは必須です" });
+      return;
+    }
+    if (!date && !due_date) {
+      res
+        .status(400)
+        .json({ error: "dateまたはdue_date(◯日まで)のいずれかが必須です" });
       return;
     }
 
@@ -157,7 +203,8 @@ export default async function handler(req, res) {
     const record = {
       id,
       destination_id,
-      date,
+      date: date || null,
+      due_date: date ? null : due_date,
       driver: driverName,
       time_type,
       time_value: time_type === "FIXED" ? time_value : null,
@@ -166,7 +213,11 @@ export default async function handler(req, res) {
     };
 
     await redis.set(`board_entry:${id}`, JSON.stringify(record));
-    await redis.sadd(`board:date:${date}`, id);
+    if (date) {
+      await redis.sadd(`board:date:${date}`, id);
+    } else {
+      await redis.sadd(UNASSIGNED_KEY, id);
+    }
     if (driverName) {
       await redis.sadd("drivers:known", driverName);
     }
@@ -176,8 +227,8 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "PUT") {
-    // ドラッグによる並び替え・日付/ドライバー変更。
-    // new_index未指定の場合は末尾に追加する。
+    // ドラッグ/手動操作による並び替え・日付移動。
+    // new_date === "unassigned" のとき未割り当てプールへ移動する。
     const { id, new_date, new_driver, new_index } = req.body || {};
     if (!id) {
       res.status(400).json({ error: "idは必須です" });
@@ -190,20 +241,37 @@ export default async function handler(req, res) {
       return;
     }
     const entry = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const sourceGroupKey = entry.date ? `board:date:${entry.date}` : UNASSIGNED_KEY;
 
-    const targetDate = new_date || entry.date;
+    const targetIsUnassigned = new_date === "unassigned";
+    const targetDate = targetIsUnassigned ? null : new_date || entry.date;
+    const targetGroupKey = targetIsUnassigned
+      ? UNASSIGNED_KEY
+      : `board:date:${targetDate}`;
     const targetDriver = new_driver !== undefined ? new_driver : entry.driver || "";
-    const dateChanged = targetDate !== entry.date;
+    const groupChanged = targetGroupKey !== sourceGroupKey;
 
-    const targetDateIds = await redis.smembers(`board:date:${targetDate}`);
-    const targetDateKeys = targetDateIds.map((i) => `board_entry:${i}`);
-    const targetDateRaw = targetDateKeys.length
-      ? await redis.mget(...targetDateKeys)
-      : [];
-    const targetGroup = targetDateRaw
-      .filter(Boolean)
-      .map((r) => (typeof r === "string" ? JSON.parse(r) : r))
-      .filter((e) => (e.driver || "") === targetDriver && e.id !== id);
+    if (targetIsUnassigned) {
+      const movedEntry = {
+        ...entry,
+        date: null,
+        driver: targetDriver,
+        manual_order: null,
+      };
+      await redis.set(`board_entry:${id}`, JSON.stringify(movedEntry));
+      if (groupChanged) {
+        await redis.srem(sourceGroupKey, id);
+        await redis.sadd(UNASSIGNED_KEY, id);
+      }
+      res.status(200).json({ status: "ok" });
+      return;
+    }
+
+    const targetIds = await redis.smembers(targetGroupKey);
+    const targetRaw = await listEntriesByIds(targetIds);
+    const targetGroup = targetRaw.filter(
+      (e) => (e.driver || "") === targetDriver && e.id !== id
+    );
 
     targetGroup.sort((a, b) => {
       const ao = a.manual_order ?? Infinity;
@@ -212,7 +280,12 @@ export default async function handler(req, res) {
       return (a.created_at || "").localeCompare(b.created_at || "");
     });
 
-    const movedEntry = { ...entry, date: targetDate, driver: targetDriver };
+    const movedEntry = {
+      ...entry,
+      date: targetDate,
+      due_date: null,
+      driver: targetDriver,
+    };
     const insertIndex = Math.max(
       0,
       Math.min(new_index ?? targetGroup.length, targetGroup.length)
@@ -227,9 +300,9 @@ export default async function handler(req, res) {
       );
     }
 
-    if (dateChanged) {
-      await redis.srem(`board:date:${entry.date}`, id);
-      await redis.sadd(`board:date:${targetDate}`, id);
+    if (groupChanged) {
+      await redis.srem(sourceGroupKey, id);
+      await redis.sadd(targetGroupKey, id);
     }
     if (targetDriver) {
       await redis.sadd("drivers:known", targetDriver);
@@ -241,13 +314,16 @@ export default async function handler(req, res) {
 
   if (req.method === "DELETE") {
     const { id, date } = req.body || {};
-    if (!id || !date) {
-      res.status(400).json({ error: "idとdateは必須です" });
+    if (!id) {
+      res.status(400).json({ error: "idは必須です" });
       return;
     }
 
     await redis.del(`board_entry:${id}`);
-    await redis.srem(`board:date:${date}`, id);
+    if (date) {
+      await redis.srem(`board:date:${date}`, id);
+    }
+    await redis.srem(UNASSIGNED_KEY, id);
     res.status(200).json({ status: "ok" });
     return;
   }
