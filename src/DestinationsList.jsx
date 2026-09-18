@@ -23,6 +23,7 @@ export default function DestinationsList() {
   const [error, setError] = useState("");
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState("");
+  const [sortBy, setSortBy] = useState("name");
   const fileInputRef = useRef(null);
 
   async function load() {
@@ -46,6 +47,20 @@ export default function DestinationsList() {
         .some((field) => normalizeKana(field).includes(q))
     );
   }, [destinations, search]);
+
+  const sortedFiltered = useMemo(() => {
+    const arr = [...filtered];
+    if (sortBy === "name") {
+      arr.sort((a, b) => (a.name || "").localeCompare(b.name || "", "ja"));
+    } else if (sortBy === "yomi") {
+      arr.sort((a, b) => (a.yomi || "").localeCompare(b.yomi || "", "ja"));
+    } else if (sortBy === "created_desc") {
+      arr.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+    } else if (sortBy === "created_asc") {
+      arr.sort((a, b) => (a.created_at || "").localeCompare(b.created_at || ""));
+    }
+    return arr;
+  }, [filtered, sortBy]);
 
   function openAddModal() {
     setEditingId(null);
@@ -172,6 +187,16 @@ export default function DestinationsList() {
           onChange={(e) => setSearch(e.target.value)}
         />
         <div style={styles.csvButtons}>
+          <select
+            style={styles.sortSelect}
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value)}
+          >
+            <option value="name">氏名(あいう順)</option>
+            <option value="yomi">ヨミ(あいう順)</option>
+            <option value="created_desc">追加順(新しい順)</option>
+            <option value="created_asc">追加順(古い順)</option>
+          </select>
           <button style={styles.csvButton} onClick={handleExport}>
             CSV書き出し
           </button>
@@ -196,22 +221,33 @@ export default function DestinationsList() {
 
       {loading ? (
         <p>読み込み中...</p>
-      ) : filtered.length === 0 ? (
+      ) : sortedFiltered.length === 0 ? (
         <p style={styles.muted}>該当する配達先がありません</p>
       ) : (
         <div style={styles.list}>
-          {filtered.map((dest) => (
+          <div style={styles.headerRow}>
+            <span style={styles.colFacility}>場所</span>
+            <span style={styles.colName}>氏名</span>
+            <span style={styles.colYomi}>ヨミ</span>
+            <span style={styles.colAddress}>住所</span>
+            <span style={styles.colNotes}>備考</span>
+          </div>
+          {sortedFiltered.map((dest) => (
             <button
               key={dest.id}
               style={styles.row}
               onClick={() => openEditModal(dest)}
             >
-              <span style={styles.rowFacility}>{dest.facility_name || "—"}</span>
-              <span style={styles.rowName}>{dest.name}様</span>
-              {dest.yomi && <span style={styles.rowYomi}>{dest.yomi}</span>}
-              <span style={styles.rowAddress}>{dest.address}</span>
-              <span style={styles.rowNotes}>{dest.notes}</span>
-              {dest.lat == null && <span style={styles.geoWarning}>位置未取得</span>}
+              <span style={styles.colFacility}>{dest.facility_name || "—"}</span>
+              <span style={styles.colName}>{dest.name}様</span>
+              <span style={styles.colYomi}>{dest.yomi || "—"}</span>
+              <span style={styles.colAddress}>{dest.address}</span>
+              <span style={styles.colNotes}>
+                {dest.notes || "—"}
+                {dest.lat == null && (
+                  <span style={styles.geoWarning}>位置未取得</span>
+                )}
+              </span>
             </button>
           ))}
         </div>
@@ -299,7 +335,15 @@ const styles = {
     fontSize: "0.95rem",
     boxSizing: "border-box",
   },
-  csvButtons: { display: "flex", gap: "0.4rem" },
+  csvButtons: { display: "flex", gap: "0.4rem", flexWrap: "wrap" },
+  sortSelect: {
+    padding: "0.5rem 0.6rem",
+    borderRadius: "6px",
+    border: "1px solid #ccc",
+    background: "#fff",
+    color: "#333",
+    fontSize: "0.8rem",
+  },
   csvButton: {
     padding: "0.5rem 0.8rem",
     borderRadius: "6px",
@@ -319,16 +363,30 @@ const styles = {
   list: {
     display: "flex",
     flexDirection: "column",
-    alignItems: "flex-start",
     background: "#fff",
     borderRadius: "10px",
     boxShadow: "0 1px 6px rgba(0,0,0,0.06)",
     overflowX: "auto",
   },
-  row: {
-    display: "flex",
-    alignItems: "center",
+  headerRow: {
+    display: "grid",
+    gridTemplateColumns: "90px 100px 90px 220px 140px",
     gap: "0.8rem",
+    padding: "0.5rem 1rem",
+    borderBottom: "2px solid #e5e7eb",
+    background: "#f9fafb",
+    fontSize: "0.75rem",
+    fontWeight: 700,
+    color: "#666",
+    width: "max-content",
+    minWidth: "100%",
+    boxSizing: "border-box",
+  },
+  row: {
+    display: "grid",
+    gridTemplateColumns: "90px 100px 90px 220px 140px",
+    gap: "0.8rem",
+    alignItems: "center",
     padding: "0.6rem 1rem",
     borderBottom: "1px solid #f0f0f0",
     background: "none",
@@ -342,12 +400,20 @@ const styles = {
     minWidth: "100%",
     fontSize: "0.85rem",
     whiteSpace: "nowrap",
+    boxSizing: "border-box",
   },
-  rowFacility: { color: "#2563eb", flexShrink: 0, minWidth: "80px" },
-  rowName: { fontWeight: 600, flexShrink: 0, minWidth: "90px" },
-  rowYomi: { color: "#999", fontSize: "0.75rem", flexShrink: 0, minWidth: "70px" },
-  rowAddress: { color: "#555", flex: 1, minWidth: "160px" },
-  rowNotes: { color: "#999", flexShrink: 0, maxWidth: "140px", overflow: "hidden", textOverflow: "ellipsis" },
+  colFacility: { color: "#2563eb", overflow: "hidden", textOverflow: "ellipsis" },
+  colName: { fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" },
+  colYomi: { color: "#999", fontSize: "0.75rem", overflow: "hidden", textOverflow: "ellipsis" },
+  colAddress: { color: "#555", overflow: "hidden", textOverflow: "ellipsis" },
+  colNotes: {
+    color: "#999",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    display: "flex",
+    alignItems: "center",
+    gap: "0.4rem",
+  },
   geoWarning: { color: "#d97706", fontSize: "0.7rem", flexShrink: 0 },
 
   form: { display: "flex", flexDirection: "column", gap: "0.6rem" },
