@@ -48,6 +48,7 @@ export default function DeliveryBoard() {
   const [form, setForm] = useState(emptyForm());
   const [draggingId, setDraggingId] = useState(null);
   const [dragPreview, setDragPreview] = useState(null);
+  const [lineSendStatus, setLineSendStatus] = useState({});
   const dragInfo = useRef(null);
 
   async function loadWeek(silent) {
@@ -164,6 +165,33 @@ export default function DeliveryBoard() {
     if (stop.time_type === "AM") return "AM";
     if (stop.time_type === "PM") return "PM";
     return "いつでも";
+  }
+
+  async function handleSendLine(date, d) {
+    const key = `${date}|${d.driver}`;
+    setLineSendStatus((prev) => ({ ...prev, [key]: "sending" }));
+
+    const res = await fetch("/api/line-send-route", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        driver: d.driver,
+        date,
+        stops: d.stops,
+        maps_url: d.maps_url,
+      }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setLineSendStatus((prev) => ({
+        ...prev,
+        [key]: `error:${data.error || "送信に失敗しました"}`,
+      }));
+      return;
+    }
+
+    setLineSendStatus((prev) => ({ ...prev, [key]: "sent" }));
   }
 
   // ==== ドラッグ&ドロップ(上下入れ替え/日付変更/未割り当てへ) ====
@@ -348,19 +376,39 @@ export default function DeliveryBoard() {
                 >
                   <div style={styles.driverHeader}>
                     <span style={styles.driverName}>{d.driver}</span>
-                    {d.maps_url ? (
-                      <a
-                        style={styles.mapsLink}
-                        href={d.maps_url}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        地図
-                      </a>
-                    ) : (
-                      <span style={styles.geoWarning}>位置未取得</span>
-                    )}
+                    <div style={styles.driverHeaderActions}>
+                      {d.maps_url ? (
+                        <a
+                          style={styles.mapsLink}
+                          href={d.maps_url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          地図
+                        </a>
+                      ) : (
+                        <span style={styles.geoWarning}>位置未取得</span>
+                      )}
+                      {d.driver && d.driver !== "未割当" && (
+                        <button
+                          style={styles.lineSendButton}
+                          disabled={lineSendStatus[`${day.date}|${d.driver}`] === "sending"}
+                          onClick={() => handleSendLine(day.date, d)}
+                        >
+                          {lineSendStatus[`${day.date}|${d.driver}`] === "sending"
+                            ? "送信中..."
+                            : lineSendStatus[`${day.date}|${d.driver}`] === "sent"
+                            ? "送信済み"
+                            : "LINEに送信"}
+                        </button>
+                      )}
+                    </div>
                   </div>
+                  {lineSendStatus[`${day.date}|${d.driver}`]?.startsWith?.("error:") && (
+                    <p style={styles.lineSendError}>
+                      {lineSendStatus[`${day.date}|${d.driver}`].slice(6)}
+                    </p>
+                  )}
                   <ol style={styles.stopList}>
                     {d.stops.map((stop, idx) => (
                       <li
@@ -494,8 +542,8 @@ export default function DeliveryBoard() {
             >
               <option value="">未割当</option>
               {knownDrivers.map((d) => (
-                <option key={d} value={d}>
-                  {d}
+                <option key={d.name} value={d.name}>
+                  {d.name}
                 </option>
               ))}
             </select>
@@ -616,6 +664,27 @@ const styles = {
     justifyContent: "space-between",
     alignItems: "center",
     marginBottom: "0.3rem",
+    flexWrap: "wrap",
+    gap: "0.3rem",
+  },
+  driverHeaderActions: {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+  },
+  lineSendButton: {
+    fontSize: "0.65rem",
+    padding: "0.15rem 0.4rem",
+    borderRadius: "5px",
+    border: "1px solid #16a34a",
+    background: "#fff",
+    color: "#16a34a",
+    cursor: "pointer",
+  },
+  lineSendError: {
+    fontSize: "0.65rem",
+    color: "#dc2626",
+    margin: "0 0 0.3rem 0",
   },
   driverName: { fontSize: "0.85rem", fontWeight: 600 },
   mapsLink: { fontSize: "0.7rem", color: "#2563eb" },
