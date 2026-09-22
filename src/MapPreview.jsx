@@ -39,13 +39,14 @@ export default function MapPreview({
   depotAddress,
   knownDrivers = [],
   showDayTabs = true,
+  showAllOption = true,
 }) {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
   const overlaysRef = useRef([]); // markers + polylines + directions renderers
   const [status, setStatus] = useState("loading"); // loading | ready | no_key | no_points | error | auth_error
   const [selectedDate, setSelectedDate] = useState(
-    showDayTabs ? null : days[0]?.date ?? null
+    showDayTabs && showAllOption ? null : days[0]?.date ?? null
   );
   const [expanded, setExpanded] = useState(false);
   const [dayNotice, setDayNotice] = useState("");
@@ -104,8 +105,12 @@ export default function MapPreview({
   }, []);
 
   useEffect(() => {
-    if (!showDayTabs) {
-      if (days[0]?.date && selectedDate !== days[0].date) {
+    if (!showDayTabs || !showAllOption) {
+      // 「全日程」が選べない場合、選択日が無効になったら先頭の日付に補正する
+      if (
+        (!selectedDate || !days.some((d) => d.date === selectedDate)) &&
+        days[0]?.date
+      ) {
         setSelectedDate(days[0].date);
       }
       return;
@@ -113,7 +118,7 @@ export default function MapPreview({
     if (selectedDate && !days.some((d) => d.date === selectedDate)) {
       setSelectedDate(null);
     }
-  }, [days, selectedDate, showDayTabs]);
+  }, [days, selectedDate, showDayTabs, showAllOption]);
 
   useEffect(() => {
     if (status !== "ready" && status !== "no_points") return;
@@ -312,12 +317,16 @@ export default function MapPreview({
       <div style={styles.controlsRow}>
         {showDayTabs && (
           <div style={styles.legend}>
-            <button
-              style={selectedDate === null ? styles.dayButtonActive : styles.dayButton}
-              onClick={() => setSelectedDate(null)}
-            >
-              全日程
-            </button>
+            {showAllOption && (
+              <button
+                style={
+                  selectedDate === null ? styles.dayButtonActive : styles.dayButton
+                }
+                onClick={() => setSelectedDate(null)}
+              >
+                全日程
+              </button>
+            )}
             {days.map((day) => (
               <button
                 key={day.date}

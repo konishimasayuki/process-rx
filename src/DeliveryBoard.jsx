@@ -573,6 +573,7 @@ export default function DeliveryBoard() {
           days={days}
           depotAddress={depotAddress}
           knownDrivers={knownDrivers}
+          showAllOption={false}
         />
       )}
 
