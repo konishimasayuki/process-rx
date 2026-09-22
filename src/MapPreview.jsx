@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { driverColor } from "./driverColors.js";
 
 let mapsScriptPromise = null;
 
@@ -18,7 +19,7 @@ function loadGoogleMapsScript(apiKey) {
   return mapsScriptPromise;
 }
 
-const DRIVER_COLORS = [
+const DAY_OVERVIEW_COLORS = [
   "#2563eb",
   "#dc2626",
   "#16a34a",
@@ -33,12 +34,19 @@ function formatShort(dateStr) {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-export default function MapPreview({ days, depotAddress }) {
+export default function MapPreview({
+  days,
+  depotAddress,
+  knownDrivers = [],
+  showDayTabs = true,
+}) {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
   const overlaysRef = useRef([]); // markers + polylines + directions renderers
   const [status, setStatus] = useState("loading"); // loading | ready | no_key | no_points | error | auth_error
-  const [selectedDate, setSelectedDate] = useState(null); // null = 全日程まとめて表示
+  const [selectedDate, setSelectedDate] = useState(
+    showDayTabs ? null : days[0]?.date ?? null
+  );
   const [expanded, setExpanded] = useState(false);
   const [dayNotice, setDayNotice] = useState("");
 
@@ -96,10 +104,16 @@ export default function MapPreview({ days, depotAddress }) {
   }, []);
 
   useEffect(() => {
+    if (!showDayTabs) {
+      if (days[0]?.date && selectedDate !== days[0].date) {
+        setSelectedDate(days[0].date);
+      }
+      return;
+    }
     if (selectedDate && !days.some((d) => d.date === selectedDate)) {
       setSelectedDate(null);
     }
-  }, [days, selectedDate]);
+  }, [days, selectedDate, showDayTabs]);
 
   useEffect(() => {
     if (status !== "ready" && status !== "no_points") return;
@@ -116,9 +130,9 @@ export default function MapPreview({ days, depotAddress }) {
       let count = 0;
 
       if (!selectedDate) {
-        // 全日程まとめて: 従来通りピンのみ表示(ルート線なし)
+        // 全日程まとめて: 従来通りピンのみ表示(ルート線なし、色は日付ごと)
         days.forEach((day, dayIdx) => {
-          const color = DRIVER_COLORS[dayIdx % DRIVER_COLORS.length];
+          const color = DAY_OVERVIEW_COLORS[dayIdx % DAY_OVERVIEW_COLORS.length];
           day.drivers?.forEach((d) => {
             d.stops.forEach((stop) => {
               if (stop.lat == null || stop.lng == null) return;
@@ -157,7 +171,7 @@ export default function MapPreview({ days, depotAddress }) {
 
         for (let driverIdx = 0; driverIdx < drivers.length; driverIdx++) {
           const d = drivers[driverIdx];
-          const color = DRIVER_COLORS[driverIdx % DRIVER_COLORS.length];
+          const color = driverColor(d.driver, knownDrivers);
           const validStops = d.stops.filter(
             (s) => s.lat != null && s.lng != null
           );
@@ -260,7 +274,7 @@ export default function MapPreview({ days, depotAddress }) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [days, status === "ready" || status === "no_points", selectedDate, depotAddress]);
+  }, [days, status === "ready" || status === "no_points", selectedDate, depotAddress, knownDrivers]);
 
   useEffect(() => {
     if (!mapInstance.current || !window.google?.maps) return;
@@ -295,27 +309,29 @@ export default function MapPreview({ days, depotAddress }) {
   return (
     <div style={expanded ? styles.wrapperExpanded : styles.wrapper}>
       <div style={styles.controlsRow}>
-        <div style={styles.legend}>
-          <button
-            style={selectedDate === null ? styles.dayButtonActive : styles.dayButton}
-            onClick={() => setSelectedDate(null)}
-          >
-            全日程
-          </button>
-          {days.map((day) => (
+        {showDayTabs && (
+          <div style={styles.legend}>
             <button
-              key={day.date}
-              style={
-                selectedDate === day.date
-                  ? styles.dayButtonActive
-                  : styles.dayButton
-              }
-              onClick={() => setSelectedDate(day.date)}
+              style={selectedDate === null ? styles.dayButtonActive : styles.dayButton}
+              onClick={() => setSelectedDate(null)}
             >
-              {formatShort(day.date)}
+              全日程
             </button>
-          ))}
-        </div>
+            {days.map((day) => (
+              <button
+                key={day.date}
+                style={
+                  selectedDate === day.date
+                    ? styles.dayButtonActive
+                    : styles.dayButton
+                }
+                onClick={() => setSelectedDate(day.date)}
+              >
+                {formatShort(day.date)}
+              </button>
+            ))}
+          </div>
+        )}
         <button
           style={styles.expandButton}
           onClick={() => setExpanded((prev) => !prev)}

@@ -3,6 +3,7 @@ import Modal from "./Modal.jsx";
 import FloatingAddButton from "./FloatingAddButton.jsx";
 import MapPreview from "./MapPreview.jsx";
 import DestinationPicker from "./DestinationPicker.jsx";
+import { driverColor } from "./driverColors.js";
 
 function todayStr() {
   const d = new Date();
@@ -21,32 +22,6 @@ function formatDayHeader(dateStr) {
 function formatShort(dateStr) {
   const d = new Date(`${dateStr}T00:00:00`);
   return `${d.getMonth() + 1}/${d.getDate()}`;
-}
-
-const DRIVER_COLORS = [
-  "#2563eb",
-  "#dc2626",
-  "#16a34a",
-  "#d97706",
-  "#7c3aed",
-  "#0891b2",
-  "#db2777",
-];
-
-function hashCode(str) {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = (hash << 5) - hash + str.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash);
-}
-
-function driverColor(driverName, knownDrivers) {
-  if (!driverName || driverName === "未割当") return "#6b7280";
-  const idx = knownDrivers.findIndex((d) => d.name === driverName);
-  const i = idx === -1 ? hashCode(driverName) : idx;
-  return DRIVER_COLORS[i % DRIVER_COLORS.length];
 }
 
 function emptyForm(date) {
@@ -593,7 +568,13 @@ export default function DeliveryBoard() {
         </div>
       )}
 
-      {!loading && <MapPreview days={days} depotAddress={depotAddress} />}
+      {!loading && (
+        <MapPreview
+          days={days}
+          depotAddress={depotAddress}
+          knownDrivers={knownDrivers}
+        />
+      )}
 
       <FloatingAddButton onClick={() => openAddModal()} />
 
