@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import DestinationsList from "./DestinationsList.jsx";
 import DeliveryBoard from "./DeliveryBoard.jsx";
 import Settings from "./Settings.jsx";
+import PublicBoard from "./PublicBoard.jsx";
 
 function LoginScreen({ onLoginSuccess }) {
   const [username, setUsername] = useState("");
@@ -191,9 +192,13 @@ function Dashboard({ onLogout }) {
 }
 
 export default function App() {
+  const isPublicBoard =
+    new URLSearchParams(window.location.search).get("public") === "board";
+
   const [authenticated, setAuthenticated] = useState(null); // null = 確認中
 
   useEffect(() => {
+    if (isPublicBoard) return;
     fetch("/api/session-check")
       .then((res) => res.json())
       .then((data) => setAuthenticated(!!data.authenticated))
@@ -203,6 +208,10 @@ export default function App() {
   async function handleLogout() {
     await fetch("/api/logout", { method: "POST" });
     setAuthenticated(false);
+  }
+
+  if (isPublicBoard) {
+    return <PublicBoard />;
   }
 
   return (
