@@ -88,7 +88,7 @@ export function buildGoogleMapsRouteUrl(orderedStops) {
     .map((s) => encodeURIComponent(s.address))
     .join("|");
 
-  let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=driving`;
+  let url = `https://www.google.com/maps/dir/?api=1&origin=${origin}&destination=${destination}&travelmode=driving&avoid=highways`;
   if (waypoints) {
     url += `&waypoints=${waypoints}`;
   }

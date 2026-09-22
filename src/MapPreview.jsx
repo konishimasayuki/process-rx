@@ -212,6 +212,7 @@ export default function MapPreview({
               destination: { lat: destination.lat, lng: destination.lng },
               waypoints,
               travelMode: window.google.maps.TravelMode.DRIVING,
+              avoidHighways: true,
             });
 
             if (cancelled) return;
