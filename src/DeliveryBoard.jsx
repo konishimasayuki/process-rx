@@ -154,6 +154,24 @@ export default function DeliveryBoard() {
     loadWeek(true);
   }
 
+  async function handleMoveStop(date, driver, stops, currentIndex, direction) {
+    const newIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+    if (newIndex < 0 || newIndex >= stops.length) return;
+
+    const entryId = stops[currentIndex].entry_id;
+    await fetch("/api/delivery-board", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: entryId,
+        new_date: date,
+        new_driver: driver,
+        new_index: newIndex,
+      }),
+    });
+    loadWeek(true);
+  }
+
   async function handleAssignDate(entryId, date) {
     if (!date) return;
     await fetch("/api/delivery-board", {
@@ -411,15 +429,6 @@ export default function DeliveryBoard() {
                         }
                       />
                     </div>
-                    <button
-                      style={styles.removeButton}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleRemove(stop.entry_id, null);
-                      }}
-                    >
-                      ×
-                    </button>
                   </li>
                 ))}
               </ol>
@@ -542,15 +551,28 @@ export default function DeliveryBoard() {
                           </div>
                           <div style={styles.address}>{stop.address}</div>
                         </div>
-                        <button
-                          style={styles.removeButton}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleRemove(stop.entry_id, day.date);
-                          }}
-                        >
-                          ×
-                        </button>
+                        <div style={styles.reorderButtons}>
+                          <button
+                            style={styles.reorderButton}
+                            disabled={idx === 0}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleMoveStop(day.date, d.driver, d.stops, idx, "up");
+                            }}
+                          >
+                            ↑
+                          </button>
+                          <button
+                            style={styles.reorderButton}
+                            disabled={idx === d.stops.length - 1}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleMoveStop(day.date, d.driver, d.stops, idx, "down");
+                            }}
+                          >
+                            ↓
+                          </button>
+                        </div>
                       </li>
                     ))}
                   </ol>
@@ -757,9 +779,24 @@ export default function DeliveryBoard() {
 
             {editError && <p style={styles.error}>{editError}</p>}
 
-            <button style={styles.button} type="submit">
-              保存
-            </button>
+            <div style={styles.formButtons}>
+              <button style={styles.button} type="submit">
+                保存
+              </button>
+              <button
+                type="button"
+                style={styles.dangerButton}
+                onClick={() => {
+                  setEditModal(null);
+                  handleRemove(
+                    editModal.entryId,
+                    editModal.date === "unassigned" ? null : editModal.date
+                  );
+                }}
+              >
+                削除
+              </button>
+            </div>
           </form>
         </Modal>
       )}
@@ -816,6 +853,16 @@ const styles = {
     border: "none",
     background: "#2563eb",
     color: "#fff",
+    fontSize: "0.95rem",
+    cursor: "pointer",
+  },
+  formButtons: { display: "flex", gap: "0.5rem" },
+  dangerButton: {
+    padding: "0.6rem 1.2rem",
+    borderRadius: "6px",
+    border: "1px solid #fca5a5",
+    background: "#fff",
+    color: "#dc2626",
     fontSize: "0.95rem",
     cursor: "pointer",
   },
@@ -970,6 +1017,24 @@ const styles = {
     color: "#dc2626",
     cursor: "pointer",
     flexShrink: 0,
+  },
+  reorderButtons: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.15rem",
+    flexShrink: 0,
+  },
+  reorderButton: {
+    width: "1.4rem",
+    height: "1.1rem",
+    fontSize: "0.7rem",
+    lineHeight: 1,
+    border: "1px solid #ddd",
+    borderRadius: "4px",
+    background: "#fff",
+    color: "#333",
+    cursor: "pointer",
+    padding: 0,
   },
   emptyAddButton: {
     marginTop: "0.4rem",
