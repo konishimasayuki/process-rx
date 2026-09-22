@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
 import MapPreview from "./MapPreview.jsx";
+import Modal from "./Modal.jsx";
+import FloatingAddButton from "./FloatingAddButton.jsx";
+import DestinationPicker from "./DestinationPicker.jsx";
 import { driverColor } from "./driverColors.js";
 
 function todayStr() {
@@ -8,6 +11,14 @@ function todayStr() {
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
+}
+
+function shiftDate(dateStr, deltaDays) {
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setDate(d.getDate() + deltaDays);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate()
+  ).padStart(2, "0")}`;
 }
 
 function formatDateHeader(dateStr) {
@@ -25,33 +36,156 @@ function timeLabel(stop) {
   return "いつでも";
 }
 
+function emptyAddForm(date) {
+  return {
+    destination_id: "",
+    date,
+    driver: "",
+    time_type: "ALL",
+    time_value: "",
+  };
+}
+
 export default function PublicBoard() {
   const [date, setDate] = useState(todayStr());
   const [drivers, setDrivers] = useState([]);
   const [depotAddress, setDepotAddress] = useState(null);
   const [knownDrivers, setKnownDrivers] = useState([]);
+  const [destinations, setDestinations] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  async function load() {
-    setLoading(true);
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [addForm, setAddForm] = useState(emptyAddForm(todayStr()));
+  const [addError, setAddError] = useState("");
+
+  const [editModal, setEditModal] = useState(null);
+  const [editError, setEditError] = useState("");
+
+  async function load(silent) {
+    if (!silent) setLoading(true);
     const res = await fetch(`/api/delivery-board?date=${date}`);
     const data = await res.json();
     setDrivers(data.drivers || []);
     if (data.depot_address) setDepotAddress(data.depot_address);
-    setLoading(false);
+    if (!silent) setLoading(false);
+  }
+
+  async function loadDestinations() {
+    const res = await fetch("/api/destinations");
+    const data = await res.json();
+    setDestinations(data.destinations || []);
+  }
+
+  async function loadDrivers() {
+    const res = await fetch("/api/drivers");
+    const data = await res.json();
+    setKnownDrivers(data.drivers || []);
   }
 
   useEffect(() => {
-    fetch("/api/drivers")
-      .then((res) => res.json())
-      .then((data) => setKnownDrivers(data.drivers || []))
-      .catch(() => {});
+    loadDestinations();
+    loadDrivers();
   }, []);
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date]);
+
+  function openAddModal() {
+    setAddForm(emptyAddForm(date));
+    setAddError("");
+    setAddModalOpen(true);
+  }
+
+  async function handleAddSubmit(e) {
+    e.preventDefault();
+    setAddError("");
+
+    if (!addForm.destination_id || !addForm.date) {
+      setAddError("配達先と日付は必須です");
+      return;
+    }
+    if (addForm.time_type === "FIXED" && !addForm.time_value) {
+      setAddError("時間指定の場合は時刻を入力してください");
+      return;
+    }
+
+    const res = await fetch("/api/delivery-board", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(addForm),
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setAddError(data.error || "登録に失敗しました");
+      return;
+    }
+
+    setAddModalOpen(false);
+    loadDrivers();
+    if (addForm.date === date) {
+      load(true);
+    }
+  }
+
+  function openEditModal(stop, driver) {
+    setEditModal({
+      entryId: stop.entry_id,
+      facilityName: stop.facility_name,
+      name: stop.name,
+      address: stop.address,
+      date,
+      driver: driver || "",
+      time_type: stop.time_type || "ALL",
+      time_value: stop.time_value || "",
+    });
+    setEditError("");
+  }
+
+  async function handleEditSubmit(e) {
+    e.preventDefault();
+    setEditError("");
+
+    if (editModal.time_type === "FIXED" && !editModal.time_value) {
+      setEditError("時間指定の場合は時刻を入力してください");
+      return;
+    }
+
+    const res = await fetch("/api/delivery-board", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: editModal.entryId,
+        new_date: editModal.date,
+        new_driver: editModal.driver,
+        time_type: editModal.time_type,
+        time_value: editModal.time_value,
+      }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setEditError(data.error || "更新に失敗しました");
+      return;
+    }
+
+    setEditModal(null);
+    loadDrivers();
+    load(true);
+  }
+
+  async function handleDelete() {
+    if (!confirm("この配達をボードから削除しますか？")) return;
+    await fetch("/api/delivery-board", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: editModal.entryId, date: editModal.date }),
+    });
+    setEditModal(null);
+    load(true);
+  }
 
   return (
     <div style={styles.wrapper}>
@@ -67,15 +201,7 @@ export default function PublicBoard() {
       <div style={styles.dateRow}>
         <button
           style={styles.dateNavButton}
-          onClick={() => {
-            const d = new Date(`${date}T00:00:00`);
-            d.setDate(d.getDate() - 1);
-            setDate(
-              `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-                d.getDate()
-              ).padStart(2, "0")}`
-            );
-          }}
+          onClick={() => setDate((d) => shiftDate(d, -1))}
         >
           ‹
         </button>
@@ -87,15 +213,7 @@ export default function PublicBoard() {
         />
         <button
           style={styles.dateNavButton}
-          onClick={() => {
-            const d = new Date(`${date}T00:00:00`);
-            d.setDate(d.getDate() + 1);
-            setDate(
-              `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-                d.getDate()
-              ).padStart(2, "0")}`
-            );
-          }}
+          onClick={() => setDate((d) => shiftDate(d, 1))}
         >
           ›
         </button>
@@ -134,7 +252,10 @@ export default function PublicBoard() {
                     <span style={{ ...styles.stopOrder, background: color }}>
                       {idx + 1}
                     </span>
-                    <div style={styles.stopBody}>
+                    <div
+                      style={styles.stopBody}
+                      onClick={() => openEditModal(stop, d.driver)}
+                    >
                       <div style={styles.stopNameRow}>
                         {stop.facility_name && (
                           <span style={styles.facilityTag}>
@@ -161,6 +282,156 @@ export default function PublicBoard() {
           knownDrivers={knownDrivers}
           showDayTabs={false}
         />
+      )}
+
+      <FloatingAddButton onClick={openAddModal} />
+
+      {addModalOpen && (
+        <Modal title="配達をボードに追加" onClose={() => setAddModalOpen(false)}>
+          <form style={styles.form} onSubmit={handleAddSubmit}>
+            <input
+              style={styles.input}
+              type="date"
+              value={addForm.date}
+              onChange={(e) => setAddForm({ ...addForm, date: e.target.value })}
+            />
+
+            <DestinationPicker
+              destinations={destinations}
+              value={addForm.destination_id}
+              onChange={(id) => setAddForm({ ...addForm, destination_id: id })}
+            />
+
+            <select
+              style={styles.input}
+              value={addForm.driver}
+              onChange={(e) => setAddForm({ ...addForm, driver: e.target.value })}
+            >
+              <option value="">未割当</option>
+              {knownDrivers.map((d) => (
+                <option key={d.name} value={d.name}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+
+            <select
+              style={styles.input}
+              value={addForm.time_type}
+              onChange={(e) =>
+                setAddForm({ ...addForm, time_type: e.target.value })
+              }
+            >
+              <option value="ALL">いつでも(ALL)</option>
+              <option value="AM">AM</option>
+              <option value="PM">PM</option>
+              <option value="FIXED">時間指定</option>
+            </select>
+
+            {addForm.time_type === "FIXED" && (
+              <input
+                style={styles.input}
+                type="time"
+                value={addForm.time_value}
+                onChange={(e) =>
+                  setAddForm({ ...addForm, time_value: e.target.value })
+                }
+              />
+            )}
+
+            {addError && <p style={styles.error}>{addError}</p>}
+
+            <button style={styles.button} type="submit">
+              ボードに追加
+            </button>
+          </form>
+        </Modal>
+      )}
+
+      {editModal && (
+        <Modal title="配達内容を編集" onClose={() => setEditModal(null)}>
+          <form style={styles.form} onSubmit={handleEditSubmit}>
+            <div style={styles.editTargetInfo}>
+              {editModal.facilityName && (
+                <span style={styles.facilityTag}>{editModal.facilityName}</span>
+              )}
+              <strong>{editModal.name}様</strong>
+              <div style={styles.address}>{editModal.address}</div>
+            </div>
+
+            <label style={styles.editLabel}>
+              日付
+              <input
+                style={styles.input}
+                type="date"
+                value={editModal.date}
+                onChange={(e) =>
+                  setEditModal({ ...editModal, date: e.target.value })
+                }
+              />
+            </label>
+
+            <label style={styles.editLabel}>
+              ドライバー
+              <select
+                style={styles.input}
+                value={editModal.driver}
+                onChange={(e) =>
+                  setEditModal({ ...editModal, driver: e.target.value })
+                }
+              >
+                <option value="">未割当</option>
+                {knownDrivers.map((d) => (
+                  <option key={d.name} value={d.name}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label style={styles.editLabel}>
+              時間
+              <select
+                style={styles.input}
+                value={editModal.time_type}
+                onChange={(e) =>
+                  setEditModal({ ...editModal, time_type: e.target.value })
+                }
+              >
+                <option value="ALL">いつでも(ALL)</option>
+                <option value="AM">AM</option>
+                <option value="PM">PM</option>
+                <option value="FIXED">時間指定</option>
+              </select>
+            </label>
+
+            {editModal.time_type === "FIXED" && (
+              <input
+                style={styles.input}
+                type="time"
+                value={editModal.time_value}
+                onChange={(e) =>
+                  setEditModal({ ...editModal, time_value: e.target.value })
+                }
+              />
+            )}
+
+            {editError && <p style={styles.error}>{editError}</p>}
+
+            <div style={styles.formButtons}>
+              <button style={styles.button} type="submit">
+                保存
+              </button>
+              <button
+                type="button"
+                style={styles.dangerButton}
+                onClick={handleDelete}
+              >
+                削除
+              </button>
+            </div>
+          </form>
+        </Modal>
       )}
     </div>
   );
@@ -257,7 +528,7 @@ const styles = {
     fontSize: "0.75rem",
     flexShrink: 0,
   },
-  stopBody: { flex: 1, minWidth: 0 },
+  stopBody: { flex: 1, minWidth: 0, cursor: "pointer" },
   stopNameRow: {
     fontSize: "0.9rem",
     display: "flex",
@@ -274,4 +545,45 @@ const styles = {
     padding: "0.1rem 0.35rem",
   },
   address: { fontSize: "0.8rem", color: "#555", marginTop: "0.1rem" },
+
+  form: { display: "flex", flexDirection: "column", gap: "0.6rem" },
+  input: {
+    padding: "0.6rem",
+    borderRadius: "6px",
+    border: "1px solid #ccc",
+    fontSize: "1rem",
+  },
+  button: {
+    padding: "0.6rem 1.2rem",
+    borderRadius: "6px",
+    border: "none",
+    background: "#2563eb",
+    color: "#fff",
+    fontSize: "0.95rem",
+    cursor: "pointer",
+  },
+  dangerButton: {
+    padding: "0.6rem 1.2rem",
+    borderRadius: "6px",
+    border: "1px solid #fca5a5",
+    background: "#fff",
+    color: "#dc2626",
+    fontSize: "0.95rem",
+    cursor: "pointer",
+  },
+  formButtons: { display: "flex", gap: "0.5rem" },
+  error: { color: "#dc2626", fontSize: "0.85rem", margin: 0 },
+  editTargetInfo: {
+    background: "#f9fafb",
+    borderRadius: "8px",
+    padding: "0.6rem",
+    fontSize: "0.85rem",
+  },
+  editLabel: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.3rem",
+    fontSize: "0.8rem",
+    color: "#555",
+  },
 };
