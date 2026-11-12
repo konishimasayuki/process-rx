@@ -2,6 +2,7 @@ import { Redis } from "@upstash/redis";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { hasValidSession } from "./_require-session.js";
 import { buildTwoUpPdf } from "./_pdf-utils.js";
+import { jstDate } from "./_fax-utils.js";
 
 const redis = Redis.fromEnv();
 const DEMO_TTL = 60 * 60 * 24 * 7;
@@ -11,22 +12,24 @@ const SAMPLE_FAXES = [
   {
     key: "a",
     filename: "SAMPLE_FAX_001.pdf",
+    sender: "福岡東クリニック",
     minutesAgo: 25,
     pageCount: 5,
     groups: [
-      { pages: [1, 2], name: "山田 花子", inst: "福岡東クリニック", printed: true },
-      { pages: [3, 4], name: "田中 太郎", inst: "なた内科", printed: true },
-      { pages: [5], name: "佐藤 一郎", inst: "小さな診療所", printed: true },
+      { pages: [1, 2], name: "山田 花子", kana: "ヤマダ ハナコ", inst: "福岡東クリニック", printed: true },
+      { pages: [3, 4], name: "田中 太郎", kana: "タナカ タロウ", inst: "福岡東クリニック", printed: true },
+      { pages: [5], name: "佐藤 一郎", kana: "サトウ イチロウ", inst: "福岡東クリニック", printed: true },
     ],
   },
   {
     key: "b",
     filename: "SAMPLE_FAX_002.pdf",
+    sender: "香椎こどもクリニック",
     minutesAgo: 6,
     pageCount: 4,
     groups: [
       { pages: [1], cover: true },
-      { pages: [2, 3], name: "鈴木 美咲", inst: "香椎こどもクリニック", printed: true },
+      { pages: [2, 3], name: "鈴木 美咲", kana: "スズキ ミサキ", inst: "香椎こどもクリニック", printed: true },
       { pages: [4], unreadable: true },
     ],
   },
@@ -56,6 +59,11 @@ export default async function handler(req, res) {
   if (req.method === "DELETE") {
     const ids = await redis.smembers("fax:demo_ids");
     for (const id of ids) {
+      const raw = await redis.get(`fax:item:${id}`);
+      if (raw) {
+        const rec = typeof raw === "string" ? JSON.parse(raw) : raw;
+        await redis.lrem(`fax:date:${jstDate(new Date(rec.received_at))}`, 0, id);
+      }
       await redis.del(`fax:item:${id}`);
       await redis.del(`fax:pdf:${id}`);
       await redis.lrem("fax:queue", 0, id);
@@ -83,6 +91,8 @@ export default async function handler(req, res) {
 
       const record = {
         id,
+        fax_id: `demo-${fax.key}`,
+        sender: fax.sender,
         demo: true,
         filename: fax.filename,
         received_at: receivedAt,
@@ -99,11 +109,14 @@ export default async function handler(req, res) {
         extracted:
           g.cover || g.unreadable
             ? null
-            : { patient_name: g.name, issuing_institution: g.inst, confidence: "high" },
+            : { patient_name: g.name, patient_kana: g.kana, issuing_institution: g.inst, confidence: "high" },
       };
       const existed = await redis.exists(`fax:item:${id}`);
       await redis.set(`fax:item:${id}`, JSON.stringify(record), { ex: DEMO_TTL });
       if (!existed) await redis.rpush("fax:queue", id);
+      const dateKey = `fax:date:${jstDate(new Date(receivedAt))}`;
+      await redis.lrem(dateKey, 0, id);
+      await redis.rpush(dateKey, id);
       await redis.sadd("fax:demo_ids", id);
       created.push(id);
     }

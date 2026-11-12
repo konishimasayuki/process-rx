@@ -2,6 +2,7 @@ import { Redis } from "@upstash/redis";
 import { PDFDocument } from "pdf-lib";
 import crypto from "crypto";
 import { buildTwoUpPdf, normalizeGroups } from "./_pdf-utils.js";
+import { jstDate, pickSender } from "./_fax-utils.js";
 
 const redis = Redis.fromEnv();
 
@@ -21,8 +22,11 @@ FAXで届いた1通分のPDFが渡されます。1通のFAXの中には、複数
    - すべてのページを、必ずちょうど1つのグループに入れる。ページ番号は1始まり。
 2. 各グループについて、処方箋の内容を読み取る。
 
+3. このFAXの送信元(送ってきた医療機関・薬局名)を読み取る。FAXの上端の送信元表示や送付状、処方箋の医療機関名から判断する。
+
 出力はJSONオブジェクトのみ(前置き・説明・コードフェンスは不要):
 {
+  "sender": "送信元の医療機関名(不明ならnull)",
   "groups": [
     {
       "pages": [1, 2],
@@ -149,9 +153,11 @@ export default async function handler(req, res) {
 
   // 1) 患者さんごとのページ分類 + 内容読み取り
   let rawGroups = null;
+  let rawSender = null;
   try {
     const analysis = await analyzeFax(pdf_base64, pageCount, process.env.ANTHROPIC_API_KEY);
     rawGroups = analysis.groups;
+    rawSender = analysis.sender;
   } catch (err) {
     if (err.isApiError) {
       // 通信・APIエラーは再試行できるよう失敗として返す(watcherが次回また送る)
@@ -163,6 +169,8 @@ export default async function handler(req, res) {
   }
 
   const groups = normalizeGroups(rawGroups, pageCount);
+  const sender = pickSender(rawSender, groups);
+  const dateKey = `fax:date:${jstDate()}`;
 
   // 2) グループごとにA4横・左右2面のPDFを作って保存
   const receivedAt = new Date().toISOString();
@@ -186,6 +194,8 @@ export default async function handler(req, res) {
 
     const record = {
       id,
+      fax_id: contentHash,
+      sender,
       filename,
       received_at: receivedAt,
       status: "pending",
@@ -204,6 +214,7 @@ export default async function handler(req, res) {
     await redis.set(itemKey, JSON.stringify(record));
     if (!existed) {
       await redis.rpush("fax:queue", id);
+      await redis.rpush(dateKey, id);
     }
     createdIds.push(id);
     summaryItems.push({
