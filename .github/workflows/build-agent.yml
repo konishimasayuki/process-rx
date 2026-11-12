@@ -1,0 +1,41 @@
+name: build-agent
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "agent/**"
+      - ".github/workflows/build-agent.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install requests pyinstaller
+
+      - name: Build exe
+        run: pyinstaller --onefile --console --name process-rx-agent agent/process_rx_agent.py
+
+      # process-rxの設定画面からダウンロードできるよう、サイトの公開フォルダに置く
+      - name: Publish to site
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path public/downloads | Out-Null
+          Copy-Item dist/process-rx-agent.exe public/downloads/process-rx-agent.exe -Force
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/downloads/process-rx-agent.exe
+          git commit -m "FAX取込アプリ(exe)を更新"
+          git pull --rebase origin main
+          git push origin main
