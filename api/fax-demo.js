@@ -1,6 +1,6 @@
 import { Redis } from "@upstash/redis";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-import { hasValidSession } from "./_require-session.js";
+import { getSession, isAdmin } from "./_session.js";
 import { buildTwoUpPdf } from "./_pdf-utils.js";
 import { jstDate } from "./_fax-utils.js";
 
@@ -51,8 +51,13 @@ async function buildSamplePdf(fax) {
 }
 
 export default async function handler(req, res) {
-  if (!(await hasValidSession(req))) {
+  const session = await getSession(req);
+  if (!session) {
     res.status(401).json({ error: "ログインが必要です" });
+    return;
+  }
+  if (!isAdmin(session)) {
+    res.status(403).json({ error: "サンプルの表示・削除は管理者のみできます" });
     return;
   }
 

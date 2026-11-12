@@ -45,7 +45,7 @@ function senderOf(rows) {
   return rows.find((r) => r.extracted?.issuing_institution)?.extracted.issuing_institution || null;
 }
 
-export default function FaxQueue() {
+export default function FaxQueue({ canManage = false }) {
   const [items, setItems] = useState([]);
   const [counts, setCounts] = useState({});
   const [today, setToday] = useState(null);
@@ -185,9 +185,11 @@ export default function FaxQueue() {
       <div style={styles.headerRow}>
         <h2 style={styles.heading}>FAX受信一覧</h2>
         <div style={styles.headerButtons}>
-          <button style={styles.subButton} onClick={toggleDemo} disabled={busy}>
-            {hasDemo ? "サンプルを消す" : "サンプル表示"}
-          </button>
+          {canManage && (
+            <button style={styles.subButton} onClick={toggleDemo} disabled={busy}>
+              {hasDemo ? "サンプルを消す" : "サンプル表示"}
+            </button>
+          )}
           <button style={styles.subButton} onClick={() => load()}>
             更新
           </button>

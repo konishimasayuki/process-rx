@@ -214,7 +214,7 @@ function Dashboard({ session, onLogout, onSwitchToMobile }) {
         {tab === "home" && <HomeTab session={session} onNavigate={selectTab} />}
         {tab === "timecard-admin" && <TimecardAdmin />}
         {tab === "payslips" && <Payslips />}
-        {tab === "fax" && <FaxQueue />}
+        {tab === "fax" && <FaxQueue canManage={session?.role === "admin"} />}
         {tab === "employees" && <Employees />}
         {tab === "board" && <DeliveryBoard />}
         {tab === "destinations" && <DestinationsList />}

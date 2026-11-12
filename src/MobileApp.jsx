@@ -40,7 +40,7 @@ export default function MobileApp({ session, onLogout, onSwitchToAdmin }) {
               </p>
             </div>
           ))}
-        {tab === "fax" && <FaxQueue />}
+        {tab === "fax" && <FaxQueue canManage={session.role === "admin"} />}
         {tab === "home" && <MobileHome session={session} onNavigate={setTab} />}
         {tab === "timecard" && <TimecardTab />}
         {tab === "settings" && (
