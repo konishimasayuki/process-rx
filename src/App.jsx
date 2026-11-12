@@ -3,6 +3,7 @@ import DestinationsList from "./DestinationsList.jsx";
 import DeliveryBoard from "./DeliveryBoard.jsx";
 import Settings from "./Settings.jsx";
 import FaxQueue from "./FaxQueue.jsx";
+import Employees from "./Employees.jsx";
 import PublicBoard from "./PublicBoard.jsx";
 
 function LoginScreen({ onLoginSuccess }) {
@@ -101,6 +102,10 @@ const MENU_SECTIONS = [
     ],
   },
   {
+    label: "スタッフ",
+    items: [{ key: "employees", label: "従業員一覧" }],
+  },
+  {
     items: [{ key: "settings", label: "設定" }],
   },
 ];
@@ -189,6 +194,7 @@ function Dashboard({ onLogout }) {
       <main className="process-rx-main" style={styles.main}>
         {tab === "home" && <HomeTab />}
         {tab === "fax" && <FaxQueue />}
+        {tab === "employees" && <Employees />}
         {tab === "board" && <DeliveryBoard />}
         {tab === "destinations" && <DestinationsList />}
         {tab === "settings" && <Settings />}

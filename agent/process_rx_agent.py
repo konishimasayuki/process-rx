@@ -7,7 +7,8 @@ FAXフォルダに新しいPDFが届いたら:
   3. 処方箋のPDFを自動で印刷(SumatraPDFを使用。無ければ初回に自動ダウンロード)
 
 ダウンロードした場所から起動すると C:\\process-rx に自分をコピーしてそこで動きます。
-初回起動時に合言葉などを聞いて config.json に保存します。
+FAXフォルダ・自動印刷のオン/オフ・プリンタは process-rx の「設定」画面で変更します。
+初回起動時は合言葉だけ聞いて config.json に保存します。
 """
 
 import base64
@@ -27,6 +28,7 @@ from pathlib import Path
 import requests
 
 APP_TITLE = "process-rx FAX取込"
+AGENT_VERSION = "1.1.0"
 API_BASE = "https://process-rx.vercel.app"
 DEFAULT_FAX_FOLDER = r"\\192.168.11.1\シェアード\fax"
 POLL_INTERVAL_SECONDS = 15
@@ -95,26 +97,18 @@ def first_time_setup() -> dict:
     secret = ""
     while not secret:
         secret = input("合言葉(VercelのFAX_SHARED_SECRETと同じ文字列): ").strip()
-    folder = ask("FAXが保存されるフォルダ", DEFAULT_FAX_FOLDER)
-    auto_print = ask_yes_no("届いた処方箋を自動で印刷しますか？")
-    printer = ""
-    if auto_print:
-        printer = ask("印刷するプリンタ名(空欄ならいつも使うプリンタ)", "")
     startup = ask_yes_no("パソコン起動時にこのアプリを自動で起動しますか？")
 
-    config = {
-        "secret": secret,
-        "fax_folder": folder,
-        "auto_print": auto_print,
-        "printer": printer,
-        "api_base": API_BASE,
-    }
-    config_path().write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-    print("設定を保存しました: config.json(変更したいときはこのファイルを削除して再起動)")
-
+    config = {"secret": secret, "api_base": API_BASE}
+    save_config(config)
+    print("設定を保存しました。FAXフォルダや自動印刷は process-rx の「設定」画面で変更できます。")
     if startup:
         register_startup()
     return config
+
+
+def save_config(config: dict) -> None:
+    config_path().write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def load_config() -> dict:
@@ -191,10 +185,15 @@ def already_running() -> bool:
     return ctypes.windll.kernel32.GetLastError() == 183  # ERROR_ALREADY_EXISTS
 
 
+_last_sumatra_try = 0.0
+
+
 def ensure_sumatra() -> None:
-    """自動印刷に使うSumatraPDFが無ければ公式サイトからダウンロードする"""
-    if find_sumatra():
+    """自動印刷に使うSumatraPDFが無ければ公式サイトからダウンロードする(失敗時は10分おきに再試行)"""
+    global _last_sumatra_try
+    if find_sumatra() or time.time() - _last_sumatra_try < 600:
         return
+    _last_sumatra_try = time.time()
     logger.info("印刷用ソフト(SumatraPDF)をダウンロードしています…")
     zip_path = APP_DIR / "sumatra.zip"
     try:
@@ -206,7 +205,7 @@ def ensure_sumatra() -> None:
             (APP_DIR / "SumatraPDF.exe").write_bytes(z.read(exe_name))
         logger.info("印刷用ソフトの準備ができました")
     except Exception as err:  # noqa: BLE001
-        logger.error("印刷用ソフトのダウンロードに失敗しました(次回起動時に再試行): %s", err)
+        logger.error("印刷用ソフトのダウンロードに失敗しました(10分後に再試行): %s", err)
     finally:
         zip_path.unlink(missing_ok=True)
 
@@ -221,6 +220,7 @@ def load_state():
                 "files": set(data.get("files", [])),
                 "printed": set(data.get("printed", [])),
                 "attempts": dict(data.get("attempts", {})),
+                "folder": data.get("folder"),
             }
         except (json.JSONDecodeError, OSError):
             logger.warning("状態ファイルの読み込みに失敗しました。空の状態から始めます")
@@ -232,6 +232,7 @@ def save_state(state: dict) -> None:
         "files": sorted(state["files"]),
         "printed": sorted(state["printed"]),
         "attempts": state["attempts"],
+        "folder": state.get("folder"),
     }
     state_path().write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
@@ -264,15 +265,15 @@ def find_sumatra():
     return None
 
 
-def print_pdf(pdf_path: Path, config: dict) -> bool:
+def print_pdf(pdf_path: Path, settings: dict) -> bool:
     sumatra = find_sumatra()
     if not sumatra:
         logger.error("印刷できません: SumatraPDF.exe がアプリと同じフォルダにありません")
         return False
 
     args = [str(sumatra), "-print-settings", "fit,paper=A4"]
-    if config.get("printer"):
-        args += ["-print-to", config["printer"]]
+    if settings.get("printer"):
+        args += ["-print-to", settings["printer"]]
     else:
         args += ["-print-to-default"]
     args += ["-silent", str(pdf_path)]
@@ -288,6 +289,51 @@ def print_pdf(pdf_path: Path, config: dict) -> bool:
         logger.error("印刷に失敗しました(%s): %s", reason, pdf_path.name)
         return False
     return True
+
+
+# ---------- サーバーの設定(画面で変更) ----------
+
+DEFAULT_SETTINGS = {"fax_folder": DEFAULT_FAX_FOLDER, "auto_print": True, "printer": ""}
+
+
+def fetch_settings(config: dict) -> dict:
+    """設定画面の内容を取得する(生存確認も兼ねる)。取れないときは前回の値を使う"""
+    try:
+        res = requests.get(
+            f"{config['api_base']}/api/fax-agent",
+            params={"version": AGENT_VERSION, "host": os.environ.get("COMPUTERNAME", "")},
+            headers={"x-fax-secret": config["secret"]},
+            timeout=20,
+        )
+        if res.status_code == 401:
+            logger.error("合言葉が違います。config.json を削除して起動し直し、正しい合言葉を入れてください")
+        elif res.status_code == 200:
+            settings = {**DEFAULT_SETTINGS, **res.json().get("settings", {})}
+            if settings != config.get("server_settings"):
+                config["server_settings"] = settings
+                save_config(config)
+                logger.info(
+                    "設定: フォルダ=%s / 自動印刷=%s / プリンタ=%s",
+                    settings["fax_folder"],
+                    "する" if settings["auto_print"] else "しない",
+                    settings["printer"] or "いつも使うプリンタ",
+                )
+            return settings
+    except requests.RequestException as err:
+        logger.warning("設定の取得に失敗しました(前回の設定で続行): %s", err)
+    return {**DEFAULT_SETTINGS, **config.get("server_settings", {})}
+
+
+def report_printed(item_id: str, config: dict) -> None:
+    try:
+        requests.post(
+            f"{config['api_base']}/api/fax-printed",
+            json={"id": item_id},
+            headers={"x-fax-secret": config["secret"]},
+            timeout=20,
+        )
+    except requests.RequestException:
+        pass  # 一覧の「印刷済」表示用なので失敗しても印刷には影響しない
 
 
 # ---------- 取込 ----------
@@ -322,7 +368,7 @@ def download_pdf(item_id: str, config: dict):
     return res.content
 
 
-def process_file(pdf_path: Path, config: dict, state: dict) -> bool:
+def process_file(pdf_path: Path, config: dict, settings: dict, state: dict) -> bool:
     """True: 取込完了(次回以降は無視) / False: 次回また試す"""
     size = pdf_path.stat().st_size
     if size > MAX_UPLOAD_BYTES:
@@ -371,12 +417,13 @@ def process_file(pdf_path: Path, config: dict, state: dict) -> bool:
 
         if not item.get("is_prescription", True):
             continue
-        if not config.get("auto_print") or item["id"] in state["printed"]:
+        if not settings.get("auto_print") or item["id"] in state["printed"]:
             continue
-        if print_pdf(out_path, config):
+        if print_pdf(out_path, settings):
             state["printed"].add(item["id"])
             printed_count += 1
             save_state(state)
+            report_printed(item["id"], config)
 
     names = "、".join(
         safe_name(i.get("patient_name")) for i in items if i.get("is_prescription", True)
@@ -391,11 +438,27 @@ def process_file(pdf_path: Path, config: dict, state: dict) -> bool:
     return True
 
 
-def run_once(config: dict, state: dict) -> None:
-    folder = Path(config["fax_folder"])
+def seed_folder(folder: Path, state: dict) -> None:
+    existing = [p.name for p in folder.glob("*.pdf")]
+    state["files"].update(existing)
+    state["folder"] = str(folder)
+    save_state(state)
+    logger.info("このフォルダに今あるFAX %d件は取り込まず、これから届くFAXを取り込みます", len(existing))
+
+
+def run_once(config: dict, settings: dict, state: dict) -> None:
+    folder = Path(settings["fax_folder"])
     if not folder.exists():
         logger.warning("FAXフォルダにアクセスできません: %s", folder)
         return
+
+    # 初回、または設定画面でフォルダが変わったときは、今あるファイルを取り込まない
+    if state.get("folder") != str(folder):
+        seed_folder(folder, state)
+        return
+
+    if settings.get("auto_print"):
+        ensure_sumatra()
 
     now = time.time()
     pdfs = sorted(folder.glob("*.pdf"), key=lambda p: p.stat().st_mtime)
@@ -405,7 +468,7 @@ def run_once(config: dict, state: dict) -> None:
         if now - pdf_path.stat().st_mtime < STABLE_SECONDS:
             continue  # まだ書き込み中かもしれない
         try:
-            done = process_file(pdf_path, config, state)
+            done = process_file(pdf_path, config, settings, state)
         except requests.RequestException as err:
             logger.error("通信エラー: %s(あとで再試行します)", err)
             done = False
@@ -426,32 +489,14 @@ def main() -> None:
     setup_logging()
     config = load_config()
     keep_awake()
-    if config.get("auto_print"):
-        ensure_sumatra()
 
-    state = load_state()
-    first_run = state is None
-    if first_run:
-        state = {"files": set(), "printed": set(), "attempts": {}}
-
-    logger.info("起動しました。FAXフォルダ: %s", config["fax_folder"])
-    logger.info("自動印刷: %s", "する" if config.get("auto_print") else "しない")
-    logger.info("※この画面は閉じないでください(最小化はOK)")
+    state = load_state() or {"files": set(), "printed": set(), "attempts": {}, "folder": None}
+    logger.info("起動しました(ver %s)。※この画面は閉じないでください(最小化はOK)", AGENT_VERSION)
 
     while True:
         try:
-            if first_run:
-                folder = Path(config["fax_folder"])
-                if folder.exists():
-                    existing = [p.name for p in folder.glob("*.pdf")]
-                    state["files"].update(existing)
-                    save_state(state)
-                    logger.info("今あるFAX %d件は取り込まず、これから届くFAXを取り込みます", len(existing))
-                    first_run = False
-                else:
-                    logger.warning("FAXフォルダにアクセスできません: %s", folder)
-            else:
-                run_once(config, state)
+            settings = fetch_settings(config)
+            run_once(config, settings, state)
         except Exception as err:  # noqa: BLE001 常駐を止めないため
             logger.exception("予期しないエラー: %s", err)
         time.sleep(POLL_INTERVAL_SECONDS)

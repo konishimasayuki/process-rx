@@ -4,8 +4,16 @@ async function checkRedisSession(token) {
   try {
     const { Redis } = await import("@upstash/redis");
     const redis = Redis.fromEnv();
-    const username = await redis.get(`session:${token}`);
-    return username || null;
+    const raw = await redis.get(`session:${token}`);
+    if (!raw) return null;
+    // 従業員ログインは {type,id,name,role} のJSON、旧形式は名前の文字列
+    if (typeof raw === "object") return raw.name || "user";
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed.name || "user" : String(raw);
+    } catch {
+      return String(raw);
+    }
   } catch (err) {
     console.error("redis session check failed (upstash unreachable?):", err);
     return null;

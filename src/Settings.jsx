@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import FaxAgentSettings from "./FaxAgentSettings.jsx";
 
 export default function Settings() {
   const [drivers, setDrivers] = useState([]);
@@ -135,25 +136,7 @@ export default function Settings() {
     <div style={styles.container}>
       <h2 style={styles.heading}>設定</h2>
 
-      <section style={styles.section}>
-        <h3 style={styles.sectionTitle}>FAX取込アプリ(薬局PC用)</h3>
-        <p style={styles.helpText}>
-          FAXフォルダが見える薬局のパソコンで、このボタンからダウンロードして実行してください。FAXが届くと患者さんごとに合体して自動で印刷します。
-        </p>
-        <a
-          style={styles.downloadButton}
-          href="/downloads/process-rx-agent.exe"
-          download
-        >
-          アプリをダウンロード
-        </a>
-        <ol style={styles.stepList}>
-          <li>ダウンロードした process-rx-agent.exe を開く(ブラウザで警告が出たら「保存」→「保持する」)</li>
-          <li>「WindowsによってPCが保護されました」と出たら「詳細情報」→「実行」</li>
-          <li>合言葉を入力し、あとはEnterで進む</li>
-          <li>黒い画面は閉じずに最小化しておく</li>
-        </ol>
-      </section>
+      <FaxAgentSettings />
 
       <section style={styles.section}>
         <h3 style={styles.sectionTitle}>LINE公式アカウント連携</h3>

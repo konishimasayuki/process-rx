@@ -1,29 +1,32 @@
 import crypto from "crypto";
 import { signStandaloneToken } from "./_auth-utils.js";
+import { verifyPassword } from "./_password.js";
 
 const SESSION_TTL_SECONDS = 60 * 60 * 12; // 12時間
 
-// 仮運用の固定アカウント。Upstashが不通でもこのアカウントだけはログイン可能。
+// 固定アカウント。Upstashが不通でもこのアカウントだけはログイン可能。
 const STANDALONE_USERNAME = process.env.LOGIN_USERNAME || "z";
 const STANDALONE_PASSWORD = process.env.LOGIN_PASSWORD || "z";
 
-async function tryAdminLogin(username, password) {
-  // 将来: Upstashに管理者テーブルを持たせてここで照合する。
+// 従業員一覧で登録したログインID/パスワードで照合する
+async function tryEmployeeLogin(loginId, password) {
   try {
     const { Redis } = await import("@upstash/redis");
     const redis = Redis.fromEnv();
-    const stored = await redis.get(`admin_user:${username}`);
-    if (!stored) return null;
-
-    const storedRecord = typeof stored === "string" ? JSON.parse(stored) : stored;
-    if (storedRecord.password !== password) return null;
+    const id = await redis.get(`employee_login:${loginId}`);
+    if (!id) return null;
+    const raw = await redis.get(`employee:${id}`);
+    if (!raw) return null;
+    const employee = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!employee.active) return null;
+    if (!verifyPassword(password, employee.password_hash)) return null;
 
     const token = crypto.randomBytes(32).toString("hex");
-    await redis.set(`session:${token}`, username, { ex: SESSION_TTL_SECONDS });
+    const session = { type: "employee", id: employee.id, name: employee.name, role: employee.role };
+    await redis.set(`session:${token}`, JSON.stringify(session), { ex: SESSION_TTL_SECONDS });
     return token;
   } catch (err) {
-    // Upstash不通時は管理者ログインは諦め、固定アカウントのみで続行
-    console.error("admin login check failed (upstash unreachable?):", err);
+    console.error("employee login check failed (upstash unreachable?):", err);
     return null;
   }
 }
@@ -52,8 +55,8 @@ export default async function handler(req, res) {
     return;
   }
 
-  // 2. それ以外はUpstash管理者テーブルと照合(将来の複数管理者用)
-  const redisToken = await tryAdminLogin(username, password);
+  // 2. 従業員アカウント
+  const redisToken = await tryEmployeeLogin(username, password);
   if (redisToken) {
     res.setHeader(
       "Set-Cookie",
