@@ -1,4 +1,5 @@
 import { Redis } from "@upstash/redis";
+import { listEmployees } from "./_employees.js";
 
 const redis = Redis.fromEnv();
 
@@ -45,17 +46,22 @@ export default async function handler(req, res) {
     return;
   }
 
-  const driverInfoRaw = await redis.get(`driver_info:${driver}`);
-  const driverInfo = driverInfoRaw
-    ? typeof driverInfoRaw === "string"
-      ? JSON.parse(driverInfoRaw)
-      : driverInfoRaw
-    : null;
+  // LINE IDは従業員一覧から探す(無ければ以前のドライバー登録)
+  const employee = (await listEmployees(redis)).find((e) => e.name === driver && e.line_id);
+  let driverInfo = employee ? { line_id: employee.line_id } : null;
+  if (!driverInfo) {
+    const driverInfoRaw = await redis.get(`driver_info:${driver}`);
+    driverInfo = driverInfoRaw
+      ? typeof driverInfoRaw === "string"
+        ? JSON.parse(driverInfoRaw)
+        : driverInfoRaw
+      : null;
+  }
 
   if (!driverInfo?.line_id) {
     res
       .status(400)
-      .json({ error: `${driver}さんのLINE IDが登録されていません` });
+      .json({ error: `${driver}さんのLINE IDが登録されていません(従業員一覧で設定してください)` });
     return;
   }
 

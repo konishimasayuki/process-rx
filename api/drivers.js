@@ -1,67 +1,35 @@
 import { Redis } from "@upstash/redis";
+import { listEmployees } from "./_employees.js";
+import { getSession, isAdmin } from "./_session.js";
 
 const redis = Redis.fromEnv();
 
-async function getDriverInfo(name) {
-  const raw = await redis.get(`driver_info:${name}`);
-  if (!raw) return { name, line_id: "" };
-  const info = typeof raw === "string" ? JSON.parse(raw) : raw;
-  return { name, line_id: info.line_id || "" };
-}
-
+// ドライバー一覧 = 従業員一覧で「ドライバー」にチェックした人
+// (以前の設定画面で登録したドライバーも、同じ名前の従業員がいなければ残す)
 export default async function handler(req, res) {
   if (req.method === "GET") {
-    const names = await redis.smembers("drivers:known");
-    const drivers = await Promise.all(names.map((n) => getDriverInfo(n)));
-    drivers.sort((a, b) => a.name.localeCompare(b.name, "ja"));
+    const employees = (await listEmployees(redis)).filter((e) => e.active && e.is_driver);
+    const names = new Set(employees.map((e) => e.name));
+    const legacy = (await redis.smembers("drivers:known")).filter((n) => !names.has(n));
+    const drivers = [
+      ...employees.map((e) => ({ name: e.name, source: "employee" })),
+      ...legacy.sort((a, b) => a.localeCompare(b, "ja")).map((n) => ({ name: n, source: "legacy" })),
+    ];
     res.status(200).json({ drivers });
     return;
   }
 
-  if (req.method === "POST") {
-    const { name, line_id } = req.body || {};
-    const trimmed = name && name.trim();
-    if (!trimmed) {
-      res.status(400).json({ error: "ドライバー名は必須です" });
-      return;
-    }
-
-    await redis.sadd("drivers:known", trimmed);
-    await redis.set(
-      `driver_info:${trimmed}`,
-      JSON.stringify({ name: trimmed, line_id: line_id || "" })
-    );
-    res.status(200).json({ status: "ok", name: trimmed, line_id: line_id || "" });
-    return;
-  }
-
-  if (req.method === "PUT") {
-    const { name, line_id } = req.body || {};
-    if (!name) {
-      res.status(400).json({ error: "nameは必須です" });
-      return;
-    }
-
-    await redis.set(
-      `driver_info:${name}`,
-      JSON.stringify({ name, line_id: line_id || "" })
-    );
-    res.status(200).json({ status: "ok" });
-    return;
-  }
-
+  // 旧ドライバー登録の削除(管理者のみ)
   if (req.method === "DELETE") {
+    const session = await getSession(req);
+    if (!isAdmin(session)) return res.status(403).json({ error: "管理者のみ操作できます" });
     const { name } = req.body || {};
-    if (!name) {
-      res.status(400).json({ error: "nameは必須です" });
-      return;
-    }
-
+    if (!name) return res.status(400).json({ error: "nameは必須です" });
     await redis.srem("drivers:known", name);
     await redis.del(`driver_info:${name}`);
     res.status(200).json({ status: "ok" });
     return;
   }
 
-  res.status(405).json({ error: "GET/POST/PUT/DELETEのみ対応しています" });
+  res.status(405).json({ error: "GET/DELETEのみ対応しています" });
 }

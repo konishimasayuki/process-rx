@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import FaxAgentSettings from "./FaxAgentSettings.jsx";
+import CompanySettings from "./CompanySettings.jsx";
 
 export default function Settings() {
   const [drivers, setDrivers] = useState([]);
@@ -137,6 +138,7 @@ export default function Settings() {
       <h2 style={styles.heading}>設定</h2>
 
       <FaxAgentSettings />
+      <CompanySettings />
 
       <section style={styles.section}>
         <h3 style={styles.sectionTitle}>LINE公式アカウント連携</h3>
@@ -194,7 +196,7 @@ export default function Settings() {
         <h3 style={styles.sectionTitle}>友達追加履歴</h3>
         <p style={styles.helpText}>
           LINEで公式アカウントが友達追加されると、ここにLINE
-          IDが表示されます。コピーしてドライバーのLINE ID欄に入力してください。
+          IDが表示されます。コピーして「従業員一覧」の各従業員のLINE ID欄に入力してください。
         </p>
 
         {loadingHistory ? (
@@ -215,55 +217,7 @@ export default function Settings() {
         )}
       </section>
 
-      <section style={styles.section}>
-        <h3 style={styles.sectionTitle}>ドライバー登録</h3>
 
-        <form style={styles.driverForm} onSubmit={handleAddDriver}>
-          <input
-            style={styles.input}
-            placeholder="ドライバー名"
-            value={newDriverName}
-            onChange={(e) => setNewDriverName(e.target.value)}
-          />
-          <input
-            style={styles.input}
-            placeholder="LINE ID(任意・後で設定可)"
-            value={newDriverLineId}
-            onChange={(e) => setNewDriverLineId(e.target.value)}
-          />
-          <button style={styles.button} type="submit">
-            追加
-          </button>
-        </form>
-
-        {driverError && <p style={styles.errorText}>{driverError}</p>}
-
-        {loadingDrivers ? (
-          <p>読み込み中...</p>
-        ) : drivers.length === 0 ? (
-          <p style={styles.muted}>まだドライバーが登録されていません</p>
-        ) : (
-          <ul style={styles.list}>
-            {drivers.map((d) => (
-              <li key={d.name} style={styles.listItem}>
-                <span style={styles.driverName}>{d.name}</span>
-                <input
-                  style={styles.lineIdInput}
-                  placeholder="LINE ID"
-                  defaultValue={d.line_id}
-                  onBlur={(e) => handleUpdateLineId(d.name, e.target.value)}
-                />
-                <button
-                  style={styles.removeButton}
-                  onClick={() => handleRemoveDriver(d.name)}
-                >
-                  削除
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
     </div>
   );
 }

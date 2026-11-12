@@ -46,7 +46,7 @@ function emptyAddForm(date) {
   };
 }
 
-export default function PublicBoard() {
+export default function PublicBoard({ embedded = false, fabBottom } = {}) {
   const [date, setDate] = useState(todayStr());
   const [drivers, setDrivers] = useState([]);
   const [depotAddress, setDepotAddress] = useState(null);
@@ -188,7 +188,7 @@ export default function PublicBoard() {
   }
 
   return (
-    <div style={styles.wrapper}>
+    <div style={embedded ? { ...styles.wrapper, minHeight: "auto" } : styles.wrapper}>
       <style>{`
         html, body { margin: 0; overflow-x: hidden; background: #f4f5f7; }
         *, *::before, *::after { box-sizing: border-box; }
@@ -284,7 +284,7 @@ export default function PublicBoard() {
         />
       )}
 
-      <FloatingAddButton onClick={openAddModal} />
+      <FloatingAddButton onClick={openAddModal} bottom={fabBottom} />
 
       {addModalOpen && (
         <Modal title="配達をボードに追加" onClose={() => setAddModalOpen(false)}>

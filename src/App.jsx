@@ -5,6 +5,10 @@ import Settings from "./Settings.jsx";
 import FaxQueue from "./FaxQueue.jsx";
 import Employees from "./Employees.jsx";
 import PublicBoard from "./PublicBoard.jsx";
+import MobileApp from "./MobileApp.jsx";
+import MobileHome from "./MobileHome.jsx";
+import TimecardAdmin from "./TimecardAdmin.jsx";
+import Payslips from "./Payslips.jsx";
 
 function LoginScreen({ onLoginSuccess }) {
   const [username, setUsername] = useState("");
@@ -76,13 +80,10 @@ function LoginScreen({ onLoginSuccess }) {
   );
 }
 
-function HomeTab() {
-  return (
-    <div style={styles.homeCard}>
-      <h1 style={styles.title}>process-rx</h1>
-      <p style={styles.subtitle}>ログイン成功。ここにFAX処方箋キューを表示予定。</p>
-    </div>
-  );
+const HOME_LINKS = { fax: "fax", delivery: "board", timecard: "timecard-admin" };
+
+function HomeTab({ session, onNavigate }) {
+  return <MobileHome session={session} onNavigate={(k) => onNavigate(HOME_LINKS[k] || k)} />;
 }
 
 // メニュー構成: ジャンル(薬局配達)ごとに項目をまとめる
@@ -103,7 +104,11 @@ const MENU_SECTIONS = [
   },
   {
     label: "スタッフ",
-    items: [{ key: "employees", label: "従業員一覧" }],
+    items: [
+      { key: "employees", label: "従業員一覧" },
+      { key: "timecard-admin", label: "タイムカード管理" },
+      { key: "payslips", label: "給料明細" },
+    ],
   },
   {
     items: [{ key: "settings", label: "設定" }],
@@ -140,7 +145,7 @@ function SidebarContent({ tab, onSelect }) {
   );
 }
 
-function Dashboard({ onLogout }) {
+function Dashboard({ session, onLogout, onSwitchToMobile }) {
   const [tab, setTab] = useState("home");
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -154,9 +159,16 @@ function Dashboard({ onLogout }) {
       {/* デスクトップ用サイドバー */}
       <aside className="process-rx-sidebar-desktop" style={styles.sidebarDesktop}>
         <SidebarContent tab={tab} onSelect={selectTab} />
-        <button style={styles.logoutButton} onClick={onLogout}>
-          ログアウト
-        </button>
+        <div style={styles.sidebarBottom}>
+          {onSwitchToMobile && (
+            <button style={styles.switchButton} onClick={onSwitchToMobile}>
+              スマホ画面に切り替え
+            </button>
+          )}
+          <button style={styles.logoutButton} onClick={onLogout}>
+            ログアウト
+          </button>
+        </div>
       </aside>
 
       {/* モバイル用ハンバーガーヘッダー */}
@@ -178,21 +190,30 @@ function Dashboard({ onLogout }) {
             onClick={(e) => e.stopPropagation()}
           >
             <SidebarContent tab={tab} onSelect={selectTab} />
-            <button
-              style={styles.logoutButton}
-              onClick={() => {
-                setMenuOpen(false);
-                onLogout();
-              }}
-            >
-              ログアウト
-            </button>
+            <div style={styles.sidebarBottom}>
+              {onSwitchToMobile && (
+                <button style={styles.switchButton} onClick={onSwitchToMobile}>
+                  スマホ画面に切り替え
+                </button>
+              )}
+              <button
+                style={styles.logoutButton}
+                onClick={() => {
+                  setMenuOpen(false);
+                  onLogout();
+                }}
+              >
+                ログアウト
+              </button>
+            </div>
           </div>
         </div>
       )}
 
       <main className="process-rx-main" style={styles.main}>
-        {tab === "home" && <HomeTab />}
+        {tab === "home" && <HomeTab session={session} onNavigate={selectTab} />}
+        {tab === "timecard-admin" && <TimecardAdmin />}
+        {tab === "payslips" && <Payslips />}
         {tab === "fax" && <FaxQueue />}
         {tab === "employees" && <Employees />}
         {tab === "board" && <DeliveryBoard />}
@@ -207,24 +228,42 @@ export default function App() {
   const isPublicBoard =
     new URLSearchParams(window.location.search).get("public") === "board";
 
-  const [authenticated, setAuthenticated] = useState(null); // null = 確認中
+  const [session, setSession] = useState(undefined); // undefined = 確認中, null = 未ログイン
+  const [view, setView] = useState(() => localStorage.getItem("process_rx_view") || "mobile");
+
+  async function checkSession() {
+    try {
+      const res = await fetch("/api/session-check");
+      const data = await res.json();
+      setSession(data.authenticated ? data : null);
+    } catch {
+      setSession(null);
+    }
+  }
 
   useEffect(() => {
     if (isPublicBoard) return;
-    fetch("/api/session-check")
-      .then((res) => res.json())
-      .then((data) => setAuthenticated(!!data.authenticated))
-      .catch(() => setAuthenticated(false));
+    checkSession();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleLogout() {
     await fetch("/api/logout", { method: "POST" });
-    setAuthenticated(false);
+    setSession(null);
+  }
+
+  function changeView(next) {
+    localStorage.setItem("process_rx_view", next);
+    setView(next);
   }
 
   if (isPublicBoard) {
     return <PublicBoard />;
   }
+
+  // 従業員ログイン → スマホ画面(管理者は管理画面にも切り替え可)。z/z → パソコンと同じ管理画面
+  const isEmployee = session?.kind === "employee";
+  const showMobile = isEmployee && !(session.role === "admin" && view === "admin");
 
   return (
     <>
@@ -240,14 +279,24 @@ export default function App() {
           .process-rx-main { margin-top: 0; margin-left: 220px; }
         }
       `}</style>
-      {authenticated === null ? (
+      {session === undefined ? (
         <div style={styles.wrapper}>
           <p>読み込み中...</p>
         </div>
-      ) : !authenticated ? (
-        <LoginScreen onLoginSuccess={() => setAuthenticated(true)} />
+      ) : !session ? (
+        <LoginScreen onLoginSuccess={checkSession} />
+      ) : showMobile ? (
+        <MobileApp
+          session={session}
+          onLogout={handleLogout}
+          onSwitchToAdmin={() => changeView("admin")}
+        />
       ) : (
-        <Dashboard onLogout={handleLogout} />
+        <Dashboard
+          session={session}
+          onLogout={handleLogout}
+          onSwitchToMobile={isEmployee ? () => changeView("mobile") : null}
+        />
       )}
     </>
   );
@@ -423,8 +472,17 @@ const styles = {
     fontSize: "0.9rem",
     cursor: "pointer",
   },
+  sidebarBottom: { marginTop: "auto", display: "flex", flexDirection: "column", gap: "0.5rem" },
+  switchButton: {
+    padding: "0.5rem",
+    borderRadius: "6px",
+    border: "1px solid #2563eb",
+    background: "#fff",
+    color: "#2563eb",
+    fontSize: "0.85rem",
+    cursor: "pointer",
+  },
   logoutButton: {
-    marginTop: "auto",
     padding: "0.5rem",
     borderRadius: "6px",
     border: "1px solid #ccc",

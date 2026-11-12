@@ -1,6 +1,6 @@
-export default function FloatingAddButton({ onClick }) {
+export default function FloatingAddButton({ onClick, bottom }) {
   return (
-    <button style={styles.fab} onClick={onClick} aria-label="追加">
+    <button style={bottom ? { ...styles.fab, bottom } : styles.fab} onClick={onClick} aria-label="追加">
       +
     </button>
   );
