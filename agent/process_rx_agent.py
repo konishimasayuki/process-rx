@@ -4,8 +4,9 @@ process-rx FAX取込アプリ(薬局PCで常駐)
 FAXフォルダに新しいPDFが届いたら:
   1. process-rx(クラウド)へ送る → 患者さんごとに分けてA4横・左右2面に合体
   2. 合体したPDFを「合体済み」フォルダに保存
-  3. 処方箋のPDFを自動で印刷(SumatraPDFを使用)
+  3. 処方箋のPDFを自動で印刷(SumatraPDFを使用。無ければ初回に自動ダウンロード)
 
+ダウンロードした場所から起動すると C:\\process-rx に自分をコピーしてそこで動きます。
 初回起動時に合言葉などを聞いて config.json に保存します。
 """
 
@@ -14,7 +15,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
+import zipfile
 import sys
 import time
 from datetime import datetime
@@ -30,6 +33,8 @@ POLL_INTERVAL_SECONDS = 15
 STABLE_SECONDS = 10  # 書き込み中のファイルを避けるため、最終更新から待つ秒数
 MAX_UPLOAD_BYTES = 3_000_000  # これを超えるPDFはクラウドに送れない
 MAX_ATTEMPTS = 5  # 壊れたPDFなどで失敗し続けた場合の上限
+INSTALL_DIR = Path(r"C:\process-rx")
+SUMATRA_URL = "https://www.sumatrapdfreader.org/dl/rel/3.6.1/SumatraPDF-3.6.1-64.zip"
 
 
 def app_dir() -> Path:
@@ -135,6 +140,75 @@ def register_startup() -> None:
         encoding = "cp932"
     bat.write_text(content, encoding=encoding, errors="replace")
     print(f"自動起動に登録しました: {bat}")
+
+
+# ---------- インストール / 二重起動防止 ----------
+
+def ensure_installed() -> bool:
+    """ダウンロードした場所から起動されたら C:\\process-rx にコピーしてそちらで起動し直す。
+    コピーして起動し直した場合は True を返す(この起動はここで終わる)"""
+    if not getattr(sys, "frozen", False) or os.name != "nt":
+        return False
+
+    target_dir = INSTALL_DIR
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        target_dir = Path(os.environ["LOCALAPPDATA"]) / "process-rx"
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+    current = Path(sys.executable).resolve()
+    target = target_dir / "process-rx-agent.exe"
+    if current.parent == target_dir.resolve():
+        return False
+
+    try:
+        shutil.copy2(current, target)
+    except PermissionError:
+        print("すでにアプリが起動中のため更新できません。")
+        print("黒い画面(process-rx FAX取込)を閉じてから、もう一度実行してください。")
+        input("Enterキーで閉じます")
+        return True
+
+    subprocess.Popen(
+        [str(target)], cwd=str(target_dir), creationflags=subprocess.CREATE_NEW_CONSOLE
+    )
+    print(f"{target_dir} にインストールしました。新しい画面で起動します。")
+    time.sleep(3)
+    return True
+
+
+_mutex_handle = None
+
+
+def already_running() -> bool:
+    global _mutex_handle
+    if os.name != "nt":
+        return False
+    import ctypes
+
+    _mutex_handle = ctypes.windll.kernel32.CreateMutexW(None, False, "process-rx-agent-single")
+    return ctypes.windll.kernel32.GetLastError() == 183  # ERROR_ALREADY_EXISTS
+
+
+def ensure_sumatra() -> None:
+    """自動印刷に使うSumatraPDFが無ければ公式サイトからダウンロードする"""
+    if find_sumatra():
+        return
+    logger.info("印刷用ソフト(SumatraPDF)をダウンロードしています…")
+    zip_path = APP_DIR / "sumatra.zip"
+    try:
+        res = requests.get(SUMATRA_URL, timeout=120)
+        res.raise_for_status()
+        zip_path.write_bytes(res.content)
+        with zipfile.ZipFile(zip_path) as z:
+            exe_name = next(n for n in z.namelist() if n.lower().endswith(".exe"))
+            (APP_DIR / "SumatraPDF.exe").write_bytes(z.read(exe_name))
+        logger.info("印刷用ソフトの準備ができました")
+    except Exception as err:  # noqa: BLE001
+        logger.error("印刷用ソフトのダウンロードに失敗しました(次回起動時に再試行): %s", err)
+    finally:
+        zip_path.unlink(missing_ok=True)
 
 
 # ---------- 状態(取込済みファイル・印刷済みID) ----------
@@ -341,11 +415,19 @@ def run_once(config: dict, state: dict) -> None:
 
 
 def main() -> None:
+    if ensure_installed():
+        return
+    if already_running():
+        print("このアプリはすでに起動しています(二重に起動すると二重印刷になるため終了します)。")
+        time.sleep(5)
+        return
     if os.name == "nt":
         os.system(f"title {APP_TITLE}")
     setup_logging()
     config = load_config()
     keep_awake()
+    if config.get("auto_print"):
+        ensure_sumatra()
 
     state = load_state()
     first_run = state is None

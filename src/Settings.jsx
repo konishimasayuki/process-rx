@@ -136,6 +136,26 @@ export default function Settings() {
       <h2 style={styles.heading}>設定</h2>
 
       <section style={styles.section}>
+        <h3 style={styles.sectionTitle}>FAX取込アプリ(薬局PC用)</h3>
+        <p style={styles.helpText}>
+          FAXフォルダが見える薬局のパソコンで、このボタンからダウンロードして実行してください。FAXが届くと患者さんごとに合体して自動で印刷します。
+        </p>
+        <a
+          style={styles.downloadButton}
+          href="/downloads/process-rx-agent.exe"
+          download
+        >
+          アプリをダウンロード
+        </a>
+        <ol style={styles.stepList}>
+          <li>ダウンロードした process-rx-agent.exe を開く(ブラウザで警告が出たら「保存」→「保持する」)</li>
+          <li>「WindowsによってPCが保護されました」と出たら「詳細情報」→「実行」</li>
+          <li>合言葉を入力し、あとはEnterで進む</li>
+          <li>黒い画面は閉じずに最小化しておく</li>
+        </ol>
+      </section>
+
+      <section style={styles.section}>
         <h3 style={styles.sectionTitle}>LINE公式アカウント連携</h3>
         <p style={styles.helpText}>
           LINE Developersコンソールで発行した「チャネルアクセストークン」と「チャネルシークレット」を入力してください。
@@ -305,6 +325,22 @@ const styles = {
   successText: { color: "#16a34a", fontSize: "0.85rem", margin: 0 },
   errorText: { color: "#dc2626", fontSize: "0.85rem", margin: "0 0 0.5rem 0" },
   muted: { color: "#888", fontSize: "0.85rem" },
+  downloadButton: {
+    display: "inline-block",
+    padding: "0.6rem 1rem",
+    borderRadius: "6px",
+    background: "#2563eb",
+    color: "#fff",
+    fontSize: "0.9rem",
+    textDecoration: "none",
+  },
+  stepList: {
+    fontSize: "0.8rem",
+    color: "#555",
+    margin: "0.8rem 0 0 0",
+    paddingLeft: "1.2rem",
+    lineHeight: 1.7,
+  },
   webhookBox: {
     marginTop: "1rem",
     padding: "0.7rem",
