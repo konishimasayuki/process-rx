@@ -20,9 +20,11 @@ import requests
 
 # ==== 設定値 ====
 FAX_FOLDER = r"\\192.168.11.1\シェアード\fax"
-UPLOAD_URL = "https://<your-project>.vercel.app/api/fax-intake"
+UPLOAD_URL = "https://process-rx.vercel.app/api/fax-intake"
 SHARED_SECRET = "ここに共有シークレットを設定"
 POLL_INTERVAL_SECONDS = 15
+# True: 初回起動時にフォルダに溜まっている既存PDFは取り込まず、以降に届いたFAXだけ取り込む
+SKIP_EXISTING_ON_FIRST_RUN = True
 PROCESSED_LOG_PATH = Path(__file__).parent / "processed_files.json"
 # =================
 
@@ -85,8 +87,18 @@ def upload_pdf(pdf_path: Path) -> bool:
     return False
 
 
+def seed_existing_files(folder: Path, processed: set) -> None:
+    existing = [p.name for p in folder.glob("*.pdf")]
+    processed.update(existing)
+    save_processed(processed)
+    logger.info(
+        "初回起動のため、フォルダ内の既存PDF %d件は取り込まずに記録しました", len(existing)
+    )
+
+
 def main() -> None:
     logger.info("FAX監視エージェント起動: %s を監視します", FAX_FOLDER)
+    needs_seed = SKIP_EXISTING_ON_FIRST_RUN and not PROCESSED_LOG_PATH.exists()
     processed = load_processed()
 
     while True:
@@ -95,6 +107,9 @@ def main() -> None:
             if not folder.exists():
                 logger.warning("フォルダにアクセスできません: %s", FAX_FOLDER)
             else:
+                if needs_seed:
+                    seed_existing_files(folder, processed)
+                    needs_seed = False
                 pdf_files = sorted(folder.glob("*.pdf"))
                 for pdf_path in pdf_files:
                     if pdf_path.name in processed:
