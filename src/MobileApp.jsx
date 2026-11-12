@@ -26,7 +26,20 @@ export default function MobileApp({ session, onLogout, onSwitchToAdmin }) {
   return (
     <div style={styles.app}>
       <main style={styles.main}>
-        {tab === "delivery" && <PublicBoard embedded fabBottom="calc(78px + env(safe-area-inset-bottom))" />}
+        {tab === "delivery" &&
+          (session.is_driver ? (
+            <PublicBoard embedded fabBottom="calc(78px + env(safe-area-inset-bottom))" />
+          ) : (
+            <div style={styles.locked}>
+              <div style={styles.lockedIcon}>🚚</div>
+              <div style={styles.lockedTitle}>配達はドライバー専用です</div>
+              <p style={styles.lockedText}>
+                ドライバー登録されると見られるようになります。
+                <br />
+                管理者に「従業員一覧」でドライバーのチェックを入れてもらってください。
+              </p>
+            </div>
+          ))}
         {tab === "fax" && <FaxQueue />}
         {tab === "home" && <MobileHome session={session} onNavigate={setTab} />}
         {tab === "timecard" && <TimecardTab />}
@@ -106,4 +119,8 @@ const styles = {
     border: "3px solid #fff",
   },
   navLabel: { fontSize: "0.66rem" },
+  locked: { maxWidth: "420px", margin: "3rem auto 0", padding: "1.5rem", textAlign: "center" },
+  lockedIcon: { fontSize: "2.6rem", marginBottom: "0.5rem" },
+  lockedTitle: { fontSize: "1.1rem", fontWeight: 700, marginBottom: "0.5rem" },
+  lockedText: { fontSize: "0.88rem", color: "#666", lineHeight: 1.8 },
 };
