@@ -3,7 +3,7 @@
 FAXで届く処方箋PDFを自動解析し、メルフィン(調剤Melphin/DUO)への入力を自動化するシステム。
 
 ## 構成
-- `watcher.py`: 薬局PC常駐エージェント。FAX共有フォルダを監視し新着PDFをアップロード
+- `agent/process_rx_agent.py`: 薬局PC常駐アプリ。FAX共有フォルダを監視→取込→合体PDFを保存・自動印刷。GitHub Actionsでexe化され、Releases(agent-latest)に置かれる
 - `api/fax-intake.js`: PDFを受け取りClaudeで処方箋データを構造化しRedisに保存
 - `api/fax-queue.js`: 処方箋キューの一覧取得・ステータス更新
 - `api/login.js` / `api/session-check.js` / `api/logout.js`: 仮ログイン機能(初期ID/PW: z/z)

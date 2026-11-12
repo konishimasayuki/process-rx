@@ -131,7 +131,10 @@ export default async function handler(req, res) {
 
   // 同じ中身のPDFは二重に処理しない
   if (await redis.sismember("fax:processed_hashes", contentHash)) {
-    res.status(200).json({ status: "duplicate", filename });
+    // 取込済み。印刷アプリが途中で止まった場合に備えて、前回の結果を返す
+    const prev = await redis.get(`fax:hash_items:${contentHash}`);
+    const items = prev ? (typeof prev === "string" ? JSON.parse(prev) : prev) : [];
+    res.status(200).json({ status: "duplicate", filename, items, ids: items.map((x) => x.id) });
     return;
   }
 
@@ -164,6 +167,7 @@ export default async function handler(req, res) {
   // 2) グループごとにA4横・左右2面のPDFを作って保存
   const receivedAt = new Date().toISOString();
   const createdIds = [];
+  const summaryItems = [];
 
   for (let i = 0; i < groups.length; i++) {
     const g = groups[i];
@@ -202,8 +206,18 @@ export default async function handler(req, res) {
       await redis.rpush("fax:queue", id);
     }
     createdIds.push(id);
+    summaryItems.push({
+      id,
+      pages: g.pages,
+      patient_name: g.extracted?.patient_name || null,
+      is_prescription: g.is_prescription,
+      has_pdf: hasPdf,
+    });
   }
 
+  await redis.set(`fax:hash_items:${contentHash}`, JSON.stringify(summaryItems), {
+    ex: PDF_TTL_SECONDS,
+  });
   await redis.sadd("fax:processed_hashes", contentHash);
   await redis.sadd("fax:processed_filenames", filename);
 
@@ -212,5 +226,6 @@ export default async function handler(req, res) {
     pages: pageCount,
     groups: groups.map((g) => g.pages),
     ids: createdIds,
+    items: summaryItems,
   });
 }

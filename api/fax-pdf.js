@@ -10,7 +10,11 @@ export default async function handler(req, res) {
     return;
   }
 
-  if (!(await hasValidSession(req))) {
+  // 画面(ログイン中)からの表示か、薬局PCの取込アプリ(合言葉付き)からの取得を許可
+  const secret = req.headers["x-fax-secret"];
+  const isAgent =
+    !!process.env.FAX_SHARED_SECRET && secret === process.env.FAX_SHARED_SECRET;
+  if (!isAgent && !(await hasValidSession(req))) {
     res.status(401).json({ error: "ログインが必要です" });
     return;
   }
