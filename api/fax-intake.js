@@ -1,49 +1,73 @@
 import { Redis } from "@upstash/redis";
+import { PDFDocument } from "pdf-lib";
+import crypto from "crypto";
+import { buildTwoUpPdf, normalizeGroups } from "./_pdf-utils.js";
 
 const redis = Redis.fromEnv();
 
-const EXTRACT_SYSTEM_PROMPT = `あなたは調剤薬局向けシステムのアシスタントです。
-FAXで届いた処方箋のPDFから、以下の情報を可能な限り正確に抽出し、JSON形式のみで出力してください。
-前置き・説明文・Markdownのコードフェンスは一切不要です。JSONオブジェクトのみを返してください。
+const MODEL = process.env.CLAUDE_MODEL || "claude-sonnet-5-5";
+const PDF_TTL_SECONDS = 60 * 60 * 24 * 60; // 合体PDFは60日保存
+const MAX_STORED_PDF_BASE64 = 9_000_000; // Upstashのリクエスト上限(10MB)に収める
 
-出力スキーマ:
+const SYSTEM_PROMPT = `あなたは調剤薬局向けシステムのアシスタントです。
+FAXで届いた1通分のPDFが渡されます。1通のFAXの中には、複数の患者さんの処方箋が順番に入っていることがあります
+(例: 全5ページなら、患者Aが2ページ、患者Bが2ページ、患者Cが1ページ、のように)。
+
+やること:
+1. 連続するページを「同じ患者さん」ごとにグループ分けする。
+   - 患者氏名・生年月日・保険者番号・医療機関などで同じ人かを判断する。
+   - 処方箋の2枚目、裏面、薬剤情報、お薬手帳の写し、疑義照会の回答などの続きのページは、直前の患者さんのグループに入れる。
+   - 送付状(表紙)など処方箋ではないページは、is_prescription を false にして別グループにする。
+   - すべてのページを、必ずちょうど1つのグループに入れる。ページ番号は1始まり。
+2. 各グループについて、処方箋の内容を読み取る。
+
+出力はJSONオブジェクトのみ(前置き・説明・コードフェンスは不要):
 {
-  "patient_name": "患者氏名（カナがあればカナも）",
-  "patient_kana": "患者氏名カナ（不明ならnull）",
-  "birth_date": "生年月日（YYYY-MM-DD形式、不明ならnull）",
-  "sex": "男 or 女（不明ならnull）",
-  "insurance_info": "保険情報・記号番号など読み取れる範囲でそのまま",
-  "issuing_institution": "医療機関名",
-  "doctor_name": "医師名（不明ならnull）",
-  "issue_date": "処方箋発行日（YYYY-MM-DD形式、不明ならnull）",
-  "drugs": [
+  "groups": [
     {
-      "name": "薬品名",
-      "dosage": "用量（1回量など、記載の通り）",
-      "usage": "用法（食後・1日3回など、記載の通り）",
-      "days_or_quantity": "日数または総量、記載の通り"
+      "pages": [1, 2],
+      "is_prescription": true,
+      "extracted": {
+        "patient_name": "患者氏名",
+        "patient_kana": "患者氏名カナ(不明ならnull)",
+        "birth_date": "YYYY-MM-DD(不明ならnull)",
+        "sex": "男 or 女(不明ならnull)",
+        "insurance_info": "保険情報・記号番号など読み取れる範囲でそのまま",
+        "issuing_institution": "医療機関名",
+        "doctor_name": "医師名(不明ならnull)",
+        "issue_date": "処方箋発行日 YYYY-MM-DD(不明ならnull)",
+        "drugs": [
+          {
+            "name": "薬品名",
+            "dosage": "用量(記載の通り)",
+            "usage": "用法(記載の通り)",
+            "days_or_quantity": "日数または総量(記載の通り)"
+          }
+        ],
+        "notes": "備考・特記事項",
+        "has_qr": true,
+        "confidence": "high/medium/low",
+        "unclear_fields": ["読み取りに自信が持てなかった項目名"]
+      }
     }
-  ],
-  "notes": "備考・特記事項（残薬確認依頼、後発品変更不可などがあれば）",
-  "has_qr": "処方箋画像内にQRコードらしきものが見えるか true/false",
-  "confidence": "全体的な読み取り自信度 high/medium/low",
-  "unclear_fields": ["読み取りに自信が持てなかった項目名の配列"]
+  ]
 }
 
-読み取れない項目はnullにしてください。憶測で埋めないでください。`;
+読み取れない項目はnullにしてください。憶測で埋めないでください。
+処方箋ではないグループの extracted は null にしてください。`;
 
-async function extractPrescription(base64Pdf, anthropicApiKey) {
+async function analyzeFax(base64Pdf, pageCount, apiKey) {
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": anthropicApiKey,
+      "x-api-key": apiKey,
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-5",
-      max_tokens: 2000,
-      system: EXTRACT_SYSTEM_PROMPT,
+      model: MODEL,
+      max_tokens: 6000,
+      system: SYSTEM_PROMPT,
       messages: [
         {
           role: "user",
@@ -58,7 +82,7 @@ async function extractPrescription(base64Pdf, anthropicApiKey) {
             },
             {
               type: "text",
-              text: "この処方箋PDFの内容を指定のJSONスキーマで抽出してください。",
+              text: `このPDFは全${pageCount}ページです。患者さんごとにページをグループ分けし、指定のJSONで出力してください。`,
             },
           ],
         },
@@ -68,17 +92,20 @@ async function extractPrescription(base64Pdf, anthropicApiKey) {
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`Anthropic API error: ${response.status} ${errText}`);
+    const err = new Error(`Anthropic API error: ${response.status} ${errText}`);
+    err.isApiError = true;
+    throw err;
   }
 
   const data = await response.json();
-  const textBlock = data.content.find((block) => block.type === "text");
-  if (!textBlock) {
-    throw new Error("Anthropic APIからテキスト応答が得られませんでした");
-  }
+  const textBlock = (data.content || []).find((b) => b.type === "text");
+  if (!textBlock) throw new Error("Claudeからテキスト応答がありません");
 
-  const cleaned = textBlock.text.replace(/```json|```/g, "").trim();
-  return JSON.parse(cleaned);
+  const text = textBlock.text.replace(/```json|```/g, "");
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end === -1) throw new Error("JSONが見つかりません");
+  return JSON.parse(text.slice(start, end + 1));
 }
 
 export default async function handler(req, res) {
@@ -94,38 +121,96 @@ export default async function handler(req, res) {
   }
 
   const { filename, pdf_base64 } = req.body || {};
-
   if (!filename || !pdf_base64) {
     res.status(400).json({ error: "filename と pdf_base64 は必須です" });
     return;
   }
 
-  const alreadyProcessed = await redis.sismember("fax:processed_filenames", filename);
-  if (alreadyProcessed) {
+  const pdfBuffer = Buffer.from(pdf_base64, "base64");
+  const contentHash = crypto.createHash("sha1").update(pdfBuffer).digest("hex").slice(0, 12);
+
+  // 同じ中身のPDFは二重に処理しない
+  if (await redis.sismember("fax:processed_hashes", contentHash)) {
     res.status(200).json({ status: "duplicate", filename });
     return;
   }
 
-  let extracted;
+  let srcDoc;
   try {
-    extracted = await extractPrescription(pdf_base64, process.env.ANTHROPIC_API_KEY);
+    srcDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
   } catch (err) {
-    res.status(500).json({ error: "処方箋解析に失敗しました", detail: String(err) });
+    res.status(400).json({ error: "PDFを読み込めません", detail: String(err) });
     return;
   }
+  const pageCount = srcDoc.getPageCount();
 
-  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const record = {
-    id,
-    filename,
-    received_at: new Date().toISOString(),
-    status: "pending",
-    extracted,
-  };
+  // 1) 患者さんごとのページ分類 + 内容読み取り
+  let rawGroups = null;
+  try {
+    const analysis = await analyzeFax(pdf_base64, pageCount, process.env.ANTHROPIC_API_KEY);
+    rawGroups = analysis.groups;
+  } catch (err) {
+    if (err.isApiError) {
+      // 通信・APIエラーは再試行できるよう失敗として返す(watcherが次回また送る)
+      res.status(500).json({ error: "FAX解析に失敗しました", detail: String(err) });
+      return;
+    }
+    // 応答の形式が崩れた場合は、全ページを要確認の単独グループとして取り込む(取りこぼし防止)
+    console.error("fax analysis parse error:", err);
+  }
 
-  await redis.set(`fax:item:${id}`, JSON.stringify(record));
-  await redis.rpush("fax:queue", id);
+  const groups = normalizeGroups(rawGroups, pageCount);
+
+  // 2) グループごとにA4横・左右2面のPDFを作って保存
+  const receivedAt = new Date().toISOString();
+  const createdIds = [];
+
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    const id = `${contentHash}-${i + 1}`;
+    const itemKey = `fax:item:${id}`;
+
+    const mergedBytes = await buildTwoUpPdf(
+      srcDoc,
+      g.pages.map((n) => n - 1)
+    );
+    const mergedBase64 = Buffer.from(mergedBytes).toString("base64");
+    const hasPdf = mergedBase64.length <= MAX_STORED_PDF_BASE64;
+    if (hasPdf) {
+      await redis.set(`fax:pdf:${id}`, mergedBase64, { ex: PDF_TTL_SECONDS });
+    }
+
+    const record = {
+      id,
+      filename,
+      received_at: receivedAt,
+      status: "pending",
+      group_index: i + 1,
+      group_count: groups.length,
+      source_pages: g.pages,
+      source_page_count: pageCount,
+      sheet_count: Math.ceil(g.pages.length / 2),
+      is_prescription: g.is_prescription,
+      needs_review: g.needs_review || !g.extracted,
+      has_pdf: hasPdf,
+      extracted: g.extracted,
+    };
+
+    const existed = await redis.exists(itemKey);
+    await redis.set(itemKey, JSON.stringify(record));
+    if (!existed) {
+      await redis.rpush("fax:queue", id);
+    }
+    createdIds.push(id);
+  }
+
+  await redis.sadd("fax:processed_hashes", contentHash);
   await redis.sadd("fax:processed_filenames", filename);
 
-  res.status(200).json({ status: "ok", id, extracted });
+  res.status(200).json({
+    status: "ok",
+    pages: pageCount,
+    groups: groups.map((g) => g.pages),
+    ids: createdIds,
+  });
 }

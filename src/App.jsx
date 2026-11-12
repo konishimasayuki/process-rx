@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import DestinationsList from "./DestinationsList.jsx";
 import DeliveryBoard from "./DeliveryBoard.jsx";
 import Settings from "./Settings.jsx";
+import FaxQueue from "./FaxQueue.jsx";
 import PublicBoard from "./PublicBoard.jsx";
 
 function LoginScreen({ onLoginSuccess }) {
@@ -87,6 +88,10 @@ function HomeTab() {
 const MENU_SECTIONS = [
   {
     items: [{ key: "home", label: "ホーム" }],
+  },
+  {
+    label: "処方箋",
+    items: [{ key: "fax", label: "FAX受信一覧" }],
   },
   {
     label: "薬局配達",
@@ -183,6 +188,7 @@ function Dashboard({ onLogout }) {
 
       <main className="process-rx-main" style={styles.main}>
         {tab === "home" && <HomeTab />}
+        {tab === "fax" && <FaxQueue />}
         {tab === "board" && <DeliveryBoard />}
         {tab === "destinations" && <DestinationsList />}
         {tab === "settings" && <Settings />}
