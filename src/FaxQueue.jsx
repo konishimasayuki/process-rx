@@ -26,6 +26,11 @@ function pagesLabel(pages) {
   return pages.length === 1 ? `${pages[0]}頁` : `${pages[0]}-${pages[pages.length - 1]}頁`;
 }
 
+// 画面に表示する時刻(取り込んだ過去分は元の受信時刻)
+function displayTime(item) {
+  return new Date(item.imported && item.original_time ? item.original_time : item.received_at);
+}
+
 // 1通のFAXごとにまとめる(送信元は1通につき1つ)
 function groupByFax(items) {
   const map = new Map();
@@ -36,7 +41,7 @@ function groupByFax(items) {
   }
   return [...map.values()]
     .map((rows) => rows.sort((a, b) => (a.group_index || 0) - (b.group_index || 0)))
-    .sort((a, b) => new Date(b[0].received_at) - new Date(a[0].received_at));
+    .sort((a, b) => displayTime(b[0]) - displayTime(a[0]));
 }
 
 function senderOf(rows) {

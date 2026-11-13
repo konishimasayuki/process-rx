@@ -13,9 +13,12 @@ async function itemsForDates(dates) {
   return raw.filter(Boolean).map((r) => (typeof r === "string" ? JSON.parse(r) : r));
 }
 
+// 画面に表示する時刻で並べる(取り込んだ過去分は元の受信時刻)
+const sortTime = (it) => new Date(it.imported && it.original_time ? it.original_time : it.received_at);
+
 function sortItems(items) {
   return items.sort((a, b) => {
-    const t = new Date(b.received_at) - new Date(a.received_at);
+    const t = sortTime(b) - sortTime(a);
     return t !== 0 ? t : (a.group_index || 0) - (b.group_index || 0);
   });
 }
