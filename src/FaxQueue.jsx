@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Modal from "./Modal.jsx";
 import FaxPreviewPanel from "./FaxPreviewPanel.jsx";
 import FaxPrintButton from "./FaxPrintButton.jsx";
+import RpEditor, { toRps } from "./RpEditor.jsx";
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -160,6 +161,9 @@ export default function FaxQueue({ canManage = false }) {
       patient_name: item.extracted?.patient_name || "",
       patient_kana: item.extracted?.patient_kana || "",
       birth_date: item.extracted?.birth_date || "",
+      insurer_number: item.extracted?.insurer_number || "",
+      insured_symbol_number: item.extracted?.insured_symbol_number || "",
+      rps: toRps(item.extracted),
       kind: kindOf(item),
     });
   }
@@ -175,6 +179,13 @@ export default function FaxQueue({ canManage = false }) {
         patient_kana: editing.patient_kana,
         birth_date: editing.birth_date,
         kind: editing.kind,
+        ...(editing.kind === "prescription"
+          ? {
+              insurer_number: editing.insurer_number,
+              insured_symbol_number: editing.insured_symbol_number,
+              rps: editing.rps,
+            }
+          : {}),
       }),
     });
     const data = await res.json().catch(() => ({}));
@@ -499,6 +510,26 @@ export default function FaxQueue({ canManage = false }) {
                     onChange={(e) => setEditing({ ...editing, birth_date: e.target.value })}
                   />
                 </label>
+                <div style={styles.twoCols}>
+                  <label style={styles.label}>
+                    保険者番号
+                    <input
+                      style={styles.input}
+                      inputMode="numeric"
+                      value={editing.insurer_number}
+                      onChange={(e) => setEditing({ ...editing, insurer_number: e.target.value })}
+                    />
+                  </label>
+                  <label style={styles.label}>
+                    記号・番号
+                    <input
+                      style={styles.input}
+                      value={editing.insured_symbol_number}
+                      onChange={(e) => setEditing({ ...editing, insured_symbol_number: e.target.value })}
+                    />
+                  </label>
+                </div>
+                <RpEditor value={editing.rps} onChange={(rps) => setEditing({ ...editing, rps })} />
               </>
             )}
 
@@ -769,6 +800,7 @@ const styles = {
   badgeImport: { ...badge, background: "#e0e7ff", color: "#3730a3" },
   badgeAd: { ...badge, background: "#fef3c7", color: "#92400e" },
   pdfButtons: { display: "flex", flexDirection: "column", gap: "0.5rem" },
+  twoCols: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" },
   dangerSub: {
     padding: "0.4rem 0.8rem",
     borderRadius: "6px",

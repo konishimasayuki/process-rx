@@ -1,6 +1,7 @@
 import {
   PDFDocument,
   clip,
+  degrees,
   endPath,
   popGraphicsState,
   pushGraphicsState,
@@ -8,9 +9,11 @@ import {
   rgb,
 } from "pdf-lib";
 
-// A4横(pt)
+// A4横(pt)。1ページだけのときはA4縦
 const SHEET_W = 841.89;
 const SHEET_H = 595.28;
+const PORTRAIT_W = 595.28;
+const PORTRAIT_H = 841.89;
 const MARGIN = 14;
 const GAP = 10;
 const MAX_SCALE = 1.6; // 拡大しすぎない(FAXの画像は元が粗いため)
@@ -67,56 +70,109 @@ export function normalizeGroups(rawGroups, pageCount) {
   return result;
 }
 
-// 割合(左上原点)の範囲を、PDFの座標(左下原点)の範囲にする
-function cropToBox(page, crop) {
-  const mb = page.getMediaBox();
+// ページの「表示するときの回転」(0/90/180/270度・時計回り)。
+// FAXのPDFは、画像を横向きで保存して表示時に回す指定が付いていることがある
+function rotationOf(page) {
+  const a = Math.round((page.getRotation().angle || 0) / 90) * 90;
+  return ((a % 360) + 360) % 360;
+}
+
+// 表示上の割合(左上原点)の範囲を、回転前のPDF座標(左下原点)の範囲にする
+function cropToBox(page, crop, rot) {
+  const cb = page.getCropBox();
+  const { x0, y0, x1, y1 } = crop;
+  let u0, u1, v0, v1; // 回転前の横(左→右)・縦(下→上)の割合
+  if (rot === 90) {
+    [u0, u1, v0, v1] = [y0, y1, x0, x1];
+  } else if (rot === 180) {
+    [u0, u1, v0, v1] = [1 - x1, 1 - x0, y0, y1];
+  } else if (rot === 270) {
+    [u0, u1, v0, v1] = [1 - y1, 1 - y0, 1 - x1, 1 - x0];
+  } else {
+    [u0, u1, v0, v1] = [x0, x1, 1 - y1, 1 - y0];
+  }
   return {
-    left: mb.x + crop.x0 * mb.width,
-    right: mb.x + crop.x1 * mb.width,
-    top: mb.y + (1 - crop.y0) * mb.height,
-    bottom: mb.y + (1 - crop.y1) * mb.height,
+    left: cb.x + u0 * cb.width,
+    right: cb.x + u1 * cb.width,
+    bottom: cb.y + v0 * cb.height,
+    top: cb.y + v1 * cb.height,
   };
 }
 
-// 指定ページ(0始まりのindex配列)を、A4横の用紙に左右2ページずつ並べたPDFにする。
-// 3ページ以上なら2ページごとに用紙を増やす。1ページだけなら左側に置く。
-//   options.crops : ページごとの内容の範囲(割合)。あれば、その範囲だけを大きく並べる
+function fullBox(page) {
+  const cb = page.getCropBox();
+  return { left: cb.x, bottom: cb.y, right: cb.x + cb.width, top: cb.y + cb.height };
+}
+
+// ページを取り込み、表示上の(回転後の)幅・高さも返す
+async function embedUpright(out, srcPage, crop) {
+  const rot = rotationOf(srcPage);
+  const ep = await out.embedPage(srcPage, crop ? cropToBox(srcPage, crop, rot) : fullBox(srcPage));
+  const swap = rot === 90 || rot === 270;
+  return { ep, rot, w: swap ? ep.height : ep.width, h: swap ? ep.width : ep.height };
+}
+
+// 表示上の左下(X,Y)に、文字が正しい向きになるよう回して描く
+function drawUpright(sheet, item, X, Y, scale) {
+  const w = item.ep.width * scale;
+  const h = item.ep.height * scale;
+  let x = X;
+  let y = Y;
+  if (item.rot === 90) y = Y + w;
+  else if (item.rot === 180) {
+    x = X + w;
+    y = Y + h;
+  } else if (item.rot === 270) x = X + h;
+  sheet.drawPage(item.ep, { x, y, width: w, height: h, rotate: degrees(-item.rot) });
+}
+
+// 枠の中央に描く。枠からはみ出す分は切り取る(隣の面にかからないように)
+function drawInSlot(sheet, item, slotX, slotY, slotW, slotH, scale) {
+  const dispW = item.w * scale;
+  const dispH = item.h * scale;
+  sheet.pushOperators(pushGraphicsState(), rectangle(slotX, slotY, slotW, slotH), clip(), endPath());
+  drawUpright(sheet, item, slotX + (slotW - dispW) / 2, slotY + (slotH - dispH) / 2, scale);
+  sheet.pushOperators(popGraphicsState());
+}
+
+// 指定ページ(0始まりのindex配列)を並べたPDFにする。
+// - 2ページずつ A4横の用紙に左右で並べる
+// - 1ページだけ(1枚の処方箋、または奇数ページの最後)は A4縦に1ページで大きく
+//   options.crops : ページごとの内容の範囲(表示上の割合)。あれば、その範囲だけを大きく並べる
 //   options.fit   : "auto"=範囲に合わせて拡大 / "full"=ページ全体
 //   options.zoom  : 拡大率の倍率(0.5〜2)。人が調整する
 export async function buildTwoUpPdf(srcDoc, pageIndexes, options = {}) {
   const { crops = [], fit = "auto", zoom = 1 } = options;
   const out = await PDFDocument.create();
-  const slotW = (SHEET_W - MARGIN * 2 - GAP) / 2;
-  const slotH = SHEET_H - MARGIN * 2;
   const zoomFactor = Math.min(2, Math.max(0.5, Number(zoom) || 1));
 
   for (let i = 0; i < pageIndexes.length; i += 2) {
     const slice = pageIndexes.slice(i, i + 2);
-    const embedded = [];
+    const items = [];
     for (let k = 0; k < slice.length; k++) {
-      const srcPage = srcDoc.getPage(slice[k]);
       const crop = fit === "auto" ? crops[i + k] : null;
-      embedded.push(await out.embedPage(srcPage, crop ? cropToBox(srcPage, crop) : undefined));
+      items.push(await embedUpright(out, srcDoc.getPage(slice[k]), crop || null));
     }
 
+    if (items.length === 1) {
+      const slotW = PORTRAIT_W - MARGIN * 2;
+      const slotH = PORTRAIT_H - MARGIN * 2;
+      const it = items[0];
+      const scale = Math.min(Math.min(slotW / it.w, slotH / it.h), MAX_SCALE) * zoomFactor;
+      const sheet = out.addPage([PORTRAIT_W, PORTRAIT_H]);
+      drawInSlot(sheet, it, MARGIN, MARGIN, slotW, slotH, scale);
+      continue;
+    }
+
+    const slotW = (SHEET_W - MARGIN * 2 - GAP) / 2;
+    const slotH = SHEET_H - MARGIN * 2;
     // 左右で同じ倍率にそろえる(大きいほうに合わせる)
-    const fitScale = Math.min(...embedded.map((ep) => Math.min(slotW / ep.width, slotH / ep.height)));
+    const fitScale = Math.min(...items.map((it) => Math.min(slotW / it.w, slotH / it.h)));
     const scale = Math.min(fitScale, MAX_SCALE) * zoomFactor;
 
     const sheet = out.addPage([SHEET_W, SHEET_H]);
-    embedded.forEach((ep, slot) => {
-      const w = ep.width * scale;
-      const h = ep.height * scale;
-      const slotX = MARGIN + slot * (slotW + GAP);
-      // 拡大して枠からはみ出す分は、隣の面にかからないよう切り取る
-      sheet.pushOperators(pushGraphicsState(), rectangle(slotX, MARGIN, slotW, slotH), clip(), endPath());
-      sheet.drawPage(ep, {
-        x: slotX + (slotW - w) / 2,
-        y: MARGIN + (slotH - h) / 2,
-        width: w,
-        height: h,
-      });
-      sheet.pushOperators(popGraphicsState());
+    items.forEach((it, slot) => {
+      drawInSlot(sheet, it, MARGIN + slot * (slotW + GAP), MARGIN, slotW, slotH, scale);
     });
 
     // 左右の区切り線

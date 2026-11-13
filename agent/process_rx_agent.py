@@ -28,7 +28,7 @@ from pathlib import Path
 import requests
 
 APP_TITLE = "process-rx FAX取込"
-AGENT_VERSION = "1.3.0"
+AGENT_VERSION = "1.4.0"
 API_BASE = "https://process-rx.vercel.app"
 DEFAULT_FAX_FOLDER = r"\\192.168.11.1\シェアード\fax"
 POLL_INTERVAL_SECONDS = 15
@@ -428,18 +428,22 @@ def process_file(pdf_path: Path, config: dict, settings: dict, state: dict, size
         )
         return True
 
-    logger.info("新しいFAX: %s", pdf_path.name)
-    res = upload(pdf_path, config)
+    # 何回目の送信かをサーバーに伝える(読み取りに何度も失敗したFAXは、サーバー側で要確認として取り込む)
+    attempt = state["attempts"].get(pdf_path.name, 0) + 1
+    logger.info("新しいFAX: %s%s", pdf_path.name, f"(再送{attempt}回目)" if attempt > 1 else "")
+    res = upload(pdf_path, config, {"attempt": attempt})
 
     if res.status_code == 401:
         logger.error("合言葉が違います。config.json の secret とVercelの設定を確認してください")
         return False
     if res.status_code == 400:
-        attempts = state["attempts"].get(pdf_path.name, 0) + 1
-        state["attempts"][pdf_path.name] = attempts
-        logger.error("PDFを読み込めません(%d回目): %s", attempts, pdf_path.name)
-        return attempts >= MAX_ATTEMPTS
+        state["attempts"][pdf_path.name] = attempt
+        save_state(state)
+        logger.error("PDFを読み込めません(%d回目): %s", attempt, pdf_path.name)
+        return attempt >= MAX_ATTEMPTS
     if res.status_code != 200:
+        state["attempts"][pdf_path.name] = attempt
+        save_state(state)
         logger.error("送信に失敗しました(%s)。あとで再試行します", res.status_code)
         return False
 
