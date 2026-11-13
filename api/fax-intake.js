@@ -3,14 +3,13 @@ import { PDFDocument } from "pdf-lib";
 import crypto from "crypto";
 import { buildItemPdf, countSheets, normalizeGroups } from "./_pdf-utils.js";
 import { analyzePages } from "./_pdf-render.js";
-import { jstDate, pickSender } from "./_fax-utils.js";
+import { SAFETY_TTL_SECONDS as PDF_TTL_SECONDS, jstDate, pickSender } from "./_fax-utils.js";
 import { basicExtracted, classifyPages, extractGroup, fillFromBasic, groupPages } from "./_fax-ai.js";
 import { saveSummary, summaryOf } from "./_fax-store.js";
 import { notifyFax } from "./_push.js";
 
 const redis = Redis.fromEnv();
 
-const PDF_TTL_SECONDS = 60 * 60 * 24 * 60; // 合体PDFは60日保存
 const MAX_STORED_PDF_BASE64 = 9_000_000; // Upstashのリクエスト上限(10MB)に収める
 const TIME_BUDGET_MS = 52_000; // サーバーの制限(60秒)に収める
 const RETRIES_BEFORE_FALLBACK = 3; // 読み取り失敗はこの回数までは再送してもらう

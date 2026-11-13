@@ -348,7 +348,7 @@ export default function FaxQueue({ canManage = false }) {
       <div style={styles.searchBox}>
         <input
           style={styles.searchInput}
-          placeholder="🔍 患者名・フリガナ・送信元で検索(過去30日)"
+          placeholder="🔍 患者名・フリガナ・送信元で検索"
           value={query}
           onChange={(e) => onSearchChange(e.target.value)}
         />
@@ -384,6 +384,12 @@ export default function FaxQueue({ canManage = false }) {
             />
           </label>
         </div>
+      )}
+
+      {!searching && (
+        <p style={styles.retentionNote}>
+          ※ 受信から3日たったFAXは、毎日夜中に自動で削除されます(薬局PCの「合体済み」フォルダには残ります)
+        </p>
       )}
 
       {searching && (
@@ -793,6 +799,7 @@ const styles = {
   },
   hiddenDate: { position: "absolute", inset: 0, opacity: 0, width: "100%", cursor: "pointer" },
   resultInfo: { fontSize: "0.8rem", color: "#666", margin: "0 0 0.6rem 0" },
+  retentionNote: { fontSize: "0.72rem", color: "#888", margin: "0 0 0.6rem 0", lineHeight: 1.5 },
   error: { color: "#dc2626", fontSize: "0.85rem", margin: 0 },
   muted: { color: "#888" },
   faxBlock: {

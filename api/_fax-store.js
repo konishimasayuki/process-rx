@@ -1,6 +1,7 @@
 // FAXの記録(患者さんごと)の読み込み・まとめ情報の保存(複数のAPIで使う)
+import { SAFETY_TTL_SECONDS as TTL } from "./_fax-utils.js";
+
 const CHUNK = 100;
-const TTL = 60 * 60 * 24 * 60;
 
 export const parse = (raw) => (raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : null);
 

@@ -2,10 +2,10 @@ import { Redis } from "@upstash/redis";
 import { PDFDocument } from "pdf-lib";
 import { getSession } from "./_session.js";
 import { buildItemPdf, countSheets, normalizeTurn } from "./_pdf-utils.js";
+import { SAFETY_TTL_SECONDS as TTL } from "./_fax-utils.js";
 
 const redis = Redis.fromEnv();
 const ID_RE = /^[A-Za-z0-9_-]+$/;
-const TTL = 60 * 60 * 24 * 60;
 
 export async function rebuildItemPdf(record) {
   const src = record.fax_id ? await redis.get(`fax:src:${record.fax_id}`) : null;

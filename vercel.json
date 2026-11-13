@@ -26,6 +26,15 @@
     },
     "api/fax-extract.js": {
       "maxDuration": 60
+    },
+    "api/fax-cleanup.js": {
+      "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/fax-cleanup",
+      "schedule": "0 18 * * *"
+    }
+  ]
 }

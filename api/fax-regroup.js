@@ -3,11 +3,10 @@ import { PDFDocument } from "pdf-lib";
 import { getSession } from "./_session.js";
 import { buildItemPdf, countSheets } from "./_pdf-utils.js";
 import { extractGroup, fillFromBasic } from "./_fax-ai.js";
-import { jstDate } from "./_fax-utils.js";
+import { SAFETY_TTL_SECONDS as TTL, jstDate } from "./_fax-utils.js";
 import { loadFaxItems, parse, saveSummary } from "./_fax-store.js";
 
 const redis = Redis.fromEnv();
-const TTL = 60 * 60 * 24 * 60;
 const MAX_STORED_PDF_BASE64 = 9_000_000;
 const ID_RE = /^[A-Za-z0-9_-]+$/;
 

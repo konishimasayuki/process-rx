@@ -1,9 +1,9 @@
 import { Redis } from "@upstash/redis";
 import { hasValidSession } from "./_require-session.js";
-import { jstDate, shiftDate, normalizeText } from "./_fax-utils.js";
+import { RETENTION_DAYS, jstDate, shiftDate, normalizeText } from "./_fax-utils.js";
 
 const redis = Redis.fromEnv();
-const SEARCH_DAYS = 30;
+const SEARCH_DAYS = RETENTION_DAYS + 1; // 残している日数(今日+過去3日)
 
 async function itemsForDates(dates) {
   const idLists = await Promise.all(dates.map((d) => redis.lrange(`fax:date:${d}`, 0, -1)));
@@ -25,8 +25,8 @@ function sortItems(items) {
 
 // FAX受信一覧
 //   ?date=YYYY-MM-DD … その日に受信した分(省略時は今日)
-//   ?q=キーワード     … 過去30日から患者名・フリガナ・送信元で検索
-// あわせて直近7日の件数(counts)を返す
+//   ?q=キーワード     … 残している期間(今日+過去3日)から患者名・フリガナ・送信元で検索
+// あわせて、残している日ごとの件数(counts)を返す
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     res.status(405).json({ error: "GETのみ対応しています" });
@@ -39,7 +39,7 @@ export default async function handler(req, res) {
 
   const today = jstDate();
   const { date, q } = req.query || {};
-  const last7 = Array.from({ length: 7 }, (_, i) => shiftDate(today, -i));
+  const last7 = Array.from({ length: RETENTION_DAYS + 1 }, (_, i) => shiftDate(today, -i));
   const lens = await Promise.all(last7.map((d) => redis.llen(`fax:date:${d}`)));
   const counts = Object.fromEntries(last7.map((d, i) => [d, lens[i] || 0]));
 

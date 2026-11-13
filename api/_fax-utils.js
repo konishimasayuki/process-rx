@@ -28,3 +28,8 @@ export function pickSender(explicitSender, groups) {
   const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
   return best ? best[0] : null;
 }
+
+// FAXを残す日数: 今日と、その前の3日分(処方箋は交付日を含めて4日間有効なので、4日分は残す)
+export const RETENTION_DAYS = 3;
+// 自動削除が動かなかったときの保険(PDFはこの日数で自然に消える)
+export const SAFETY_TTL_SECONDS = 60 * 60 * 24 * 10;
