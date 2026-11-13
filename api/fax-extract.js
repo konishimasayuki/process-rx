@@ -3,6 +3,7 @@ import { PDFDocument } from "pdf-lib";
 import { getSession } from "./_session.js";
 import { extractGroup, fillFromBasic } from "./_fax-ai.js";
 import { loadFaxItems, saveSummary } from "./_fax-store.js";
+import { recordAiStatus } from "./_ai-status.js";
 
 const redis = Redis.fromEnv();
 const ID_RE = /^[A-Za-z0-9_-]+$/;
@@ -66,9 +67,11 @@ export default async function handler(req, res) {
           }
           it.extracted = filled;
           it.extract_status = "done";
+          await recordAiStatus(redis, null);
         } catch (err) {
           console.error("deferred extract failed:", it.id, err?.kind, String(err));
           it.extract_status = "failed";
+          await recordAiStatus(redis, err);
         }
         it.extracted_at = now;
         it.needs_review = !it.extracted || !it.extracted.patient_name || it.extract_status === "failed";

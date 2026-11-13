@@ -2,12 +2,51 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { getSession, isAdmin } from "./_session.js";
 import { analyzePages, renderPagePng } from "./_pdf-render.js";
 import { buildTwoUpPdf } from "./_pdf-utils.js";
+import { Redis } from "@upstash/redis";
+import { callClaude, describeAiError } from "./_fax-ai.js";
+import { recordAiStatus } from "./_ai-status.js";
 
 // 管理者用の動作確認: 見本のFAX風PDFを作って「画像にする→余白を調べる→拡大して並べる」が動くか確かめる。
 // データは保存しない。?png=1 で並べた結果の画像も見られる。
 export default async function handler(req, res) {
   const session = await getSession(req);
   if (!isAdmin(session)) return res.status(session ? 403 : 401).json({ error: "管理者のみ" });
+
+  // ?ai=1 … AIにつながるか(残高・キー・モデル)を、ごく小さな問い合わせで確かめる
+  if (req.query?.ai === "1") {
+    const models = [
+      ["ページ分け・処方内容の読み取り", process.env.CLAUDE_MODEL || "claude-sonnet-5-5"],
+      ["向きの判定", process.env.CLAUDE_MODEL_ORIENT || "claude-haiku-5-5"],
+    ];
+    const results = [];
+    for (const [purpose, model] of models) {
+      try {
+        await callClaude({
+          system: "返事は ok の2文字だけ。",
+          content: [{ type: "text", text: "接続確認です。ok と返してください。{ }" }],
+          maxTokens: 20,
+          timeoutMs: 15_000,
+          model,
+        }).catch((err) => {
+          // 返事が JSON でなくても、つながってさえいれば良い
+          if (err?.kind === "parse") return null;
+          throw err;
+        });
+        results.push({ purpose, model, ok: true });
+      } catch (err) {
+        results.push({ purpose, model, ok: false, ...describeAiError(err), detail: String(err?.apiMessage || err?.message || "").slice(0, 300) });
+      }
+    }
+    const allOk = results.every((r) => r.ok);
+    const mainOk = results[0].ok;
+    await recordAiStatus(Redis.fromEnv(), mainOk ? null : { kind: "api", status: results[0].code === "no_credit" ? 400 : undefined, apiMessage: results[0].code === "no_credit" ? "credit balance" : results[0].message });
+    res.status(200).json({
+      ok: allOk,
+      summary: allOk ? "AIにつながっています" : mainOk ? "向きの判定のAIだけつながりません(ページ分けは動きます)" : "AIにつながりません",
+      results,
+    });
+    return;
+  }
 
   const started = Date.now();
   const report = { steps: [] };

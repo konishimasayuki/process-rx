@@ -4,7 +4,16 @@ import crypto from "crypto";
 import { buildItemPdf, countSheets, normalizeGroups } from "./_pdf-utils.js";
 import { analyzePages } from "./_pdf-render.js";
 import { SAFETY_TTL_SECONDS as PDF_TTL_SECONDS, jstDate, pickSender } from "./_fax-utils.js";
-import { basicExtracted, classifyPages, extractGroup, fillFromBasic, groupPages } from "./_fax-ai.js";
+import {
+  basicExtracted,
+  classifyPages,
+  describeAiError,
+  extractGroup,
+  fillFromBasic,
+  groupPages,
+  isRetryable,
+} from "./_fax-ai.js";
+import { recordAiStatus } from "./_ai-status.js";
 import { saveSummary, summaryOf } from "./_fax-store.js";
 import { detectOrientations } from "./_fax-orient.js";
 import { notifyFax } from "./_push.js";
@@ -14,6 +23,25 @@ const redis = Redis.fromEnv();
 const MAX_STORED_PDF_BASE64 = 9_000_000; // Upstashのリクエスト上限(10MB)に収める
 const TIME_BUDGET_MS = 52_000; // サーバーの制限(60秒)に収める
 const RETRIES_BEFORE_FALLBACK = 3; // 読み取り失敗はこの回数までは再送してもらう
+const AI_RETRY_DELAY_MS = Number(process.env.AI_RETRY_DELAY_MS ?? 1500); // 一時的な失敗のとき、待ってからやり直す間隔
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ページ分けの読み取り。混み合い・利用制限・時間切れのような「待てば直る」失敗は、待って自動でやり直す。
+// 残高不足・キーの間違いのような「待っても直らない」失敗は、すぐ失敗として返す
+async function classifyWithRetry(pdfBase64, pageCount, remaining) {
+  let lastErr;
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await classifyPages(pdfBase64, pageCount, Math.max(5_000, Math.min(35_000, remaining() - 8_000)));
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryable(err) || remaining() < 25_000) break;
+      await sleep(AI_RETRY_DELAY_MS * (i + 1));
+    }
+  }
+  return { error: lastErr };
+}
 
 // 各ページの「処方箋の本体の範囲」(余白を除いて大きく印刷するため)。失敗しても取込は続ける
 async function detectCrops(pdfBuffer, pageCount) {
@@ -86,7 +114,7 @@ export default async function handler(req, res) {
   // 向きの判定(4枚に回した画像から読める1枚を選ばせる)も同時に進める。ページ分けが失敗しても向きは直せる
   const [crops, classified, orientTurns] = await Promise.all([
     detectCrops(pdfBuffer, pageCount),
-    classifyPages(pdf_base64, pageCount, Math.min(35_000, remaining())).catch((err) => ({ error: err })),
+    classifyWithRetry(pdf_base64, pageCount, remaining),
     detectOrientations(pdfBuffer, pageCount, Math.min(30_000, remaining())),
   ]);
   timings.classify_ms = Date.now() - started;
@@ -94,18 +122,22 @@ export default async function handler(req, res) {
   let rawGroups = null;
   let rawSender = null;
   const turns = {}; // ページごとの追加の回転(横倒しの処方箋をまっすぐに)
+  let analysisError = null; // ページ分けの読み取りに失敗したときの原因
   if (classified.error) {
     const err = classified.error;
-    console.error("fax classify failed:", err.kind, String(err));
-    if (attempt < RETRIES_BEFORE_FALLBACK) {
-      // 一時的な失敗かもしれないので、アプリに再送してもらう
+    console.error("fax classify failed:", err?.kind, err?.status, String(err));
+    await recordAiStatus(redis, err);
+    if (attempt < RETRIES_BEFORE_FALLBACK && isRetryable(err)) {
+      // 一時的な失敗かもしれないので、アプリに再送してもらう(残高不足などは待っても直らないので、すぐ取り込む)
       res.status(500).json({ error: "FAXの読み取りに失敗しました(再試行します)", detail: String(err), attempt });
       return;
     }
-    // 何度やっても読めないときは、全ページを「要確認」の単独グループで取り込む(取りこぼし防止)。
-    // 向きは判定できていれば、まっすぐにして印刷する
+    // 読めないときは、全ページを「要確認」の単独グループで取り込む(取りこぼし防止)。
+    // 向きは判定できていれば、まっすぐにして印刷する。失敗の原因は記録して、画面に出す
+    analysisError = { ...describeAiError(err), at: new Date().toISOString() };
     for (const [n, t] of Object.entries(orientTurns)) if (t) turns[n] = t;
   } else {
+    await recordAiStatus(redis, null);
     rawSender = classified.sender;
 
     // 2) 同じ人のページをまとめ、患者さんごとに処方内容まで詳しく読む(同時に進める)
@@ -203,6 +235,8 @@ export default async function handler(req, res) {
         g.kind === "prescription" &&
         !g.extract_pending &&
         (g.needs_review || !g.extracted || !g.extracted.patient_name),
+      analysis_failed: analysisError ? true : undefined,
+      analysis_error: analysisError || undefined,
       extract_status: g.kind === "prescription" ? (g.extract_pending ? "pending" : "done") : undefined,
       crops: groupCrops,
       turns: groupTurns,

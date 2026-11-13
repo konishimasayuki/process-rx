@@ -1,6 +1,7 @@
 import { Redis } from "@upstash/redis";
 import { hasValidSession } from "./_require-session.js";
 import { RETENTION_DAYS, jstDate, shiftDate, normalizeText } from "./_fax-utils.js";
+import { getAiStatus } from "./_ai-status.js";
 
 const redis = Redis.fromEnv();
 const SEARCH_DAYS = RETENTION_DAYS + 1; // 残している日数(今日+過去3日)
@@ -50,10 +51,10 @@ export default async function handler(req, res) {
       [it.extracted?.patient_name, it.extracted?.patient_kana, it.sender, it.extracted?.issuing_institution]
         .some((v) => v && normalizeText(v).includes(needle))
     );
-    res.status(200).json({ items: sortItems(items), counts, today });
+    res.status(200).json({ items: sortItems(items), counts, today, ai: await getAiStatus(redis) });
     return;
   }
 
   const target = /^\d{4}-\d{2}-\d{2}$/.test(date || "") ? date : today;
-  res.status(200).json({ items: sortItems(await itemsForDates([target])), counts, today, date: target });
+  res.status(200).json({ items: sortItems(await itemsForDates([target])), counts, today, date: target, ai: await getAiStatus(redis) });
 }

@@ -3,6 +3,8 @@ import { PDFDocument } from "pdf-lib";
 import { getSession } from "./_session.js";
 import { buildItemPdf, countSheets } from "./_pdf-utils.js";
 import { extractGroup, fillFromBasic } from "./_fax-ai.js";
+import { detectOrientations } from "./_fax-orient.js";
+import { recordAiStatus } from "./_ai-status.js";
 import { SAFETY_TTL_SECONDS as TTL, jstDate } from "./_fax-utils.js";
 import { loadFaxItems, parse, saveSummary } from "./_fax-store.js";
 
@@ -86,6 +88,15 @@ export default async function handler(req, res) {
     used.add(p.id);
   }
 
+  // --- AIの読み取りに失敗していたFAXは、向きも判定し直す(人が回した向きは、そのまま残す) ---
+  const failedBefore = items.some((it) => it.analysis_failed);
+  if (reread === true && failedBefore) {
+    const detected = await detectOrientations(Buffer.from(String(srcBase64), "base64"), srcDoc.getPageCount(), 30_000);
+    for (const [n, t] of Object.entries(detected)) {
+      if (t && !allTurns[n]) allTurns[n] = t;
+    }
+  }
+
   // --- 変わったまとまり: 処方箋はAIが読み直す(同時に進める) ---
   await Promise.all(
     plan
@@ -95,8 +106,10 @@ export default async function handler(req, res) {
         try {
           const detail = await extractGroup(srcDoc, { pages: p.pages, turns: pick(allTurns, p.pages) }, 40_000);
           p.extracted = fillFromBasic(detail, { infos: fallbackInfo });
+          await recordAiStatus(redis, null);
         } catch (err) {
           console.error("regroup extract failed:", p.pages, err?.kind, String(err));
+          await recordAiStatus(redis, err);
           p.extracted = p.inherit ? p.base.extracted || null : null;
           p.needsReview = true;
         }
@@ -146,6 +159,8 @@ export default async function handler(req, res) {
       auto_printed_at: p.reread ? p.base.auto_printed_at : undefined,
       manual_printed_at: p.reread ? p.base.manual_printed_at : undefined,
       extract_status: p.kind === "prescription" ? "done" : undefined,
+      analysis_failed: p.reread && p.needsReview ? p.base.analysis_failed : undefined,
+      analysis_error: p.reread && p.needsReview ? p.base.analysis_error : undefined,
       regrouped_at: now,
       regrouped_by: session.name,
       pdf_updated_at: now,

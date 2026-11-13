@@ -6,10 +6,34 @@ const MODEL = process.env.CLAUDE_MODEL || "claude-sonnet-5-5";
 // ---------- Claude 呼び出し ----------
 
 class AiError extends Error {
-  constructor(message, kind) {
+  constructor(message, kind, status, apiMessage) {
     super(message);
     this.kind = kind; // "api" | "timeout" | "truncated" | "parse"
+    this.status = status; // APIのHTTP状態(あれば)
+    this.apiMessage = apiMessage; // APIが返したエラーの文面(あれば)
   }
+}
+
+// AIの失敗を、画面に出せる種類と日本語の説明にする
+export function describeAiError(err) {
+  const status = err?.status;
+  const msg = String(err?.apiMessage || err?.message || "").toLowerCase();
+  if (err?.kind === "timeout") return { code: "timeout", message: "AIの応答に時間がかかりすぎました" };
+  if (err?.kind === "truncated") return { code: "truncated", message: "AIの回答が長すぎて途中で切れました" };
+  if (err?.kind === "parse") return { code: "parse", message: "AIの回答を読み取れませんでした" };
+  if (status === 400 && msg.includes("credit balance"))
+    return { code: "no_credit", message: "AIの利用残高が足りません(Anthropicのクレジットを追加してください)" };
+  if (status === 401 || status === 403)
+    return { code: "auth", message: "AIのAPIキーが無効か、権限がありません(Vercelの ANTHROPIC_API_KEY を確認してください)" };
+  if (status === 404) return { code: "model", message: "AIのモデルが見つかりません(Vercelの CLAUDE_MODEL を確認してください)" };
+  if (status === 429) return { code: "rate_limit", message: "AIの利用制限に達しています(少し待つと直ります)" };
+  if (status === 529 || (status >= 500 && status < 600)) return { code: "overloaded", message: "AIが混み合っています(少し待つと直ります)" };
+  return { code: "other", message: `AIの呼び出しに失敗しました(${status || "通信エラー"})` };
+}
+
+// 待ってやり直せば直る可能性があるか(残高不足・キーの間違いなどは、待っても直らない)
+export function isRetryable(err) {
+  return ["timeout", "rate_limit", "overloaded", "parse"].includes(describeAiError(err).code);
 }
 
 // content を渡すと、その内容をそのまま送る(画像など)。渡さなければ、PDF + text を送る
@@ -49,7 +73,14 @@ export async function callClaude({ system, pdfBase64, text, content, maxTokens, 
   }
 
   if (!response.ok) {
-    throw new AiError(`Anthropic API error: ${response.status} ${await response.text()}`, "api");
+    const text = await response.text();
+    let apiMessage = "";
+    try {
+      apiMessage = JSON.parse(text)?.error?.message || "";
+    } catch {
+      apiMessage = text.slice(0, 200);
+    }
+    throw new AiError(`Anthropic API error: ${response.status} ${text}`, "api", response.status, apiMessage);
   }
   const data = await response.json();
   if (data.stop_reason === "max_tokens") {

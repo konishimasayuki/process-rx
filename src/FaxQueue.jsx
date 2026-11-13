@@ -72,6 +72,8 @@ export default function FaxQueue({ canManage = false }) {
   const [editing, setEditing] = useState(null); // 患者さんの修正
   const [senderEdit, setSenderEdit] = useState(null); // 送信元の修正
   const [regroupRows, setRegroupRows] = useState(null); // ページのまとめ方の修正
+  const [ai, setAi] = useState({ ok: true }); // AIの状態(失敗しているときは警告を出す)
+  const [bulkProgress, setBulkProgress] = useState(null); // 失敗したFAXをまとめて読み直している間の進み具合
   const [saveError, setSaveError] = useState("");
   const searchTimer = useRef(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -98,6 +100,7 @@ export default function FaxQueue({ canManage = false }) {
       } else {
         const data = await res.json();
         setItems(data.items || []);
+        setAi(data.ai || { ok: true });
         setCounts(data.counts || {});
         setToday(data.today);
         setError("");
@@ -330,6 +333,33 @@ export default function FaxQueue({ canManage = false }) {
     setRereading(false);
   }
 
+  // 読み取りに失敗したFAXを、順番に読み直す(AIの残高を足したあとなどに使う)
+  const failedItems = items.filter((i) => i.analysis_failed && i.fax_id);
+  async function rereadAllFailed() {
+    const faxIds = [...new Set(failedItems.map((i) => i.fax_id))];
+    let failures = 0;
+    for (let n = 0; n < faxIds.length; n++) {
+      setBulkProgress(`${n + 1} / ${faxIds.length} 通を読み直し中…`);
+      const groups = items
+        .filter((i) => i.fax_id === faxIds[n])
+        .map((i) => i.source_pages)
+        .sort((a, b) => a[0] - b[0]);
+      try {
+        const res = await fetch("/api/fax-regroup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fax_id: faxIds[n], groups, reread: true }),
+        });
+        if (!res.ok) failures += 1;
+      } catch {
+        failures += 1;
+      }
+    }
+    await load(true);
+    setBulkProgress(failures ? `${failures}通は読み直せませんでした。AIの状態を確認してください` : "読み直しました");
+    setTimeout(() => setBulkProgress(null), 6000);
+  }
+
   async function deleteAll() {
     await deleteRequest(
       { all: true },
@@ -415,6 +445,26 @@ export default function FaxQueue({ canManage = false }) {
         </div>
       )}
 
+      {(ai.ok === false || failedItems.length > 0) && (
+        <div style={styles.aiWarning}>
+          <div style={styles.aiWarningTitle}>
+            ⚠ {ai.ok === false ? "AIの読み取りが失敗しています" : `AIの読み取りに失敗したFAXが${failedItems.length}件あります`}
+          </div>
+          {ai.ok === false && <div style={styles.aiWarningText}>{ai.message}</div>}
+          {ai.ok === false && ai.code === "no_credit" && (
+            <div style={styles.aiWarningText}>
+              Anthropicのコンソール(console.anthropic.com)の「Plans &amp; Billing」で、クレジットを追加してください。追加したあと、下のボタンで読み直せます。
+            </div>
+          )}
+          {failedItems.length > 0 && (
+            <button type="button" style={styles.aiWarningButton} onClick={rereadAllFailed} disabled={!!bulkProgress}>
+              失敗したFAX({[...new Set(failedItems.map((i) => i.fax_id))].length}通)をまとめて読み直す
+            </button>
+          )}
+        </div>
+      )}
+      {bulkProgress && <p style={styles.bulkProgress}>{bulkProgress}</p>}
+
       {!searching && (
         <p style={styles.retentionNote}>
           ※ 受信から3日たったFAXは、毎日夜中に自動で削除されます(薬局PCの「合体済み」フォルダには残ります)
@@ -491,6 +541,7 @@ export default function FaxQueue({ canManage = false }) {
                     )}
                     {kindOf(item) === "ad" && <span style={styles.badgeAd}>広告</span>}
                     {item.extract_status === "pending" && <span style={styles.badgeReading}>読み取り中</span>}
+                    {item.analysis_failed && <span style={styles.badgeFail}>読取失敗</span>}
                     {!item.imported && item.auto_printed_at && <span style={styles.badgeGreen}>自動印刷済</span>}
                     {item.manual_printed_at && <span style={styles.badgeManual}>手動印刷済</span>}
                     {!item.imported && item.printed_at && !item.auto_printed_at && !item.manual_printed_at && (
@@ -522,6 +573,15 @@ export default function FaxQueue({ canManage = false }) {
                 {pagesLabel(editing.item.source_pages)}(全{editing.item.source_page_count}頁)
               </div>
             </div>
+
+            {editing.item.analysis_failed && (
+              <div style={styles.aiWarning}>
+                <div style={styles.aiWarningText}>
+                  AIの読み取りに失敗しました{editing.item.analysis_error?.message ? `(${editing.item.analysis_error.message})` : ""}。
+                  下の「AIで読み取り直す」を押すと、向き・名前・送信元を読み直します。
+                </div>
+              </div>
+            )}
 
             {editing.item.has_pdf ? (
               <FaxPreviewPanel
@@ -897,6 +957,12 @@ const styles = {
   badgeDemo: { ...badge, background: "#fef3c7", color: "#92400e" },
   badgeImport: { ...badge, background: "#e0e7ff", color: "#3730a3" },
   badgeAd: { ...badge, background: "#fef3c7", color: "#92400e" },
+  badgeFail: { ...badge, background: "#fef2f2", color: "#b91c1c", fontWeight: 700 },
+  aiWarning: { background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "0.6rem 0.8rem", margin: "0 0 0.6rem 0", display: "flex", flexDirection: "column", gap: "0.35rem" },
+  bulkProgress: { fontSize: "0.82rem", color: "#2563eb", margin: "0 0 0.6rem 0", fontWeight: 700 },
+  aiWarningTitle: { fontWeight: 700, fontSize: "0.88rem", color: "#b91c1c" },
+  aiWarningText: { fontSize: "0.78rem", color: "#7f1d1d", lineHeight: 1.6 },
+  aiWarningButton: { alignSelf: "flex-start", padding: "0.45rem 0.8rem", borderRadius: "6px", border: "1px solid #b91c1c", background: "#fff", color: "#b91c1c", fontSize: "0.82rem", cursor: "pointer" },
   badgeManual: { ...badge, background: "#e0f2fe", color: "#0369a1" },
   badgeReading: { ...badge, background: "#f1f5f9", color: "#475569" },
   regroupButton: {
