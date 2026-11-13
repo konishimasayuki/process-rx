@@ -1,7 +1,7 @@
 import { Redis } from "@upstash/redis";
 import { PDFDocument } from "pdf-lib";
 import crypto from "crypto";
-import { buildItemPdf, normalizeGroups, sheetCount } from "./_pdf-utils.js";
+import { buildItemPdf, countSheets, normalizeGroups } from "./_pdf-utils.js";
 import { analyzePages } from "./_pdf-render.js";
 import { jstDate, pickSender } from "./_fax-utils.js";
 import { basicExtracted, classifyPages, extractGroup, fillFromBasic, groupPages } from "./_fax-ai.js";
@@ -189,7 +189,7 @@ export default async function handler(req, res) {
       group_count: groups.length,
       source_pages: g.pages,
       source_page_count: pageCount,
-      sheet_count: sheetCount(g.kind, g.pages.length),
+      sheet_count: await countSheets(mergedBytes),
       kind: g.kind,
       is_prescription: g.is_prescription,
       auto_print: g.kind !== "ad", // 広告以外は自動で印刷する

@@ -138,8 +138,12 @@ function drawInSlot(sheet, item, slotX, slotY, slotW, slotH, scale) {
   sheet.pushOperators(popGraphicsState());
 }
 
-// 指定ページ(0始まりのindex配列)を、A4横の用紙に左右2ページずつ並べたPDFにする。
-// 3ページ以上なら2ページごとに用紙を増やす。1ページだけの用紙は左側(端)に寄せる。
+const WIDE_RATIO = 1.15; // 横幅が高さのこの倍より大きい(横長の)ページは、左右に並べずA4横1枚で
+
+// 指定ページ(0始まりのindex配列)を、A4横の用紙に並べたPDFにする。
+// - 縦長のページは2ページずつ左右に並べる。1ページだけ余ったら左側(端)に寄せる
+// - 横長のページ(A4横いっぱいの処方箋など)は、左右に並べず A4横1枚をまるごと使う
+// - ページの順番は変えない
 //   options.crops : ページごとの内容の範囲(表示上の割合)。あれば、その範囲だけを大きく並べる
 //   options.turns : ページごとの追加の回転(時計回り・度)。横倒しの処方箋をまっすぐにする
 //   options.fit   : "auto"=範囲に合わせて拡大 / "full"=ページ全体
@@ -151,31 +155,51 @@ export async function buildTwoUpPdf(srcDoc, pageIndexes, options = {}) {
   const slotH = SHEET_H - MARGIN * 2;
   const zoomFactor = Math.min(2, Math.max(0.5, Number(zoom) || 1));
 
-  for (let i = 0; i < pageIndexes.length; i += 2) {
-    const slice = pageIndexes.slice(i, i + 2);
-    const items = [];
-    for (let k = 0; k < slice.length; k++) {
-      const crop = fit === "auto" ? crops[i + k] : null;
-      items.push(await embedUpright(out, srcDoc.getPage(slice[k]), crop || null, turns[i + k] || 0));
-    }
+  const items = [];
+  for (let k = 0; k < pageIndexes.length; k++) {
+    const crop = fit === "auto" ? crops[k] : null;
+    items.push(await embedUpright(out, srcDoc.getPage(pageIndexes[k]), crop || null, turns[k] || 0));
+  }
 
+  // 縦長のページを左右に並べる(1〜2ページ)
+  const drawPair = (pair) => {
     // 左右で同じ倍率にそろえる(大きいほうに合わせる)
-    const fitScale = Math.min(...items.map((it) => Math.min(slotW / it.w, slotH / it.h)));
+    const fitScale = Math.min(...pair.map((it) => Math.min(slotW / it.w, slotH / it.h)));
     const scale = Math.min(fitScale, MAX_SCALE) * zoomFactor;
-
     const sheet = out.addPage([SHEET_W, SHEET_H]);
-    items.forEach((it, slot) => {
-      drawInSlot(sheet, it, MARGIN + slot * (slotW + GAP), MARGIN, slotW, slotH, scale);
-    });
-
-    // 左右の区切り線
+    pair.forEach((it, slot) => drawInSlot(sheet, it, MARGIN + slot * (slotW + GAP), MARGIN, slotW, slotH, scale));
     sheet.drawLine({
       start: { x: SHEET_W / 2, y: MARGIN },
       end: { x: SHEET_W / 2, y: SHEET_H - MARGIN },
       thickness: 0.5,
       color: rgb(0.75, 0.75, 0.75),
     });
+  };
+
+  // 横長のページを、A4横1枚をまるごと使って大きく
+  const drawWide = (it) => {
+    const w = SHEET_W - MARGIN * 2;
+    const h = SHEET_H - MARGIN * 2;
+    const scale = Math.min(Math.min(w / it.w, h / it.h), MAX_SCALE) * zoomFactor;
+    const sheet = out.addPage([SHEET_W, SHEET_H]);
+    drawInSlot(sheet, it, MARGIN, MARGIN, w, h, scale);
+  };
+
+  let pending = [];
+  for (const it of items) {
+    if (it.w / it.h > WIDE_RATIO) {
+      if (pending.length) drawPair(pending);
+      pending = [];
+      drawWide(it);
+    } else {
+      pending.push(it);
+      if (pending.length === 2) {
+        drawPair(pending);
+        pending = [];
+      }
+    }
   }
+  if (pending.length) drawPair(pending);
 
   return out.save();
 }
@@ -203,6 +227,11 @@ export async function buildItemPdf(srcDoc, { kind, source_pages, crops, turns, l
 
 export function sheetCount(kind, pageTotal) {
   return kind === "ad" ? pageTotal : Math.ceil(pageTotal / 2);
+}
+
+// できあがったPDFの用紙の枚数(横長のページがあると、ページ数÷2 にならないため)
+export async function countSheets(bytes) {
+  return (await PDFDocument.load(bytes)).getPageCount();
 }
 
 // 自動印刷するか(広告以外。古い記録は処方箋だけ)

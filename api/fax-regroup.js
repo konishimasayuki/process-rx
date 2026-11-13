@@ -1,7 +1,7 @@
 import { Redis } from "@upstash/redis";
 import { PDFDocument } from "pdf-lib";
 import { getSession } from "./_session.js";
-import { buildItemPdf, sheetCount } from "./_pdf-utils.js";
+import { buildItemPdf, countSheets } from "./_pdf-utils.js";
 import { extractGroup, fillFromBasic } from "./_fax-ai.js";
 import { jstDate } from "./_fax-utils.js";
 import { loadFaxItems, parse, saveSummary } from "./_fax-store.js";
@@ -127,7 +127,7 @@ export default async function handler(req, res) {
       status: "pending",
       source_pages: p.pages,
       source_page_count: p.base.source_page_count,
-      sheet_count: sheetCount(p.kind, p.pages.length),
+      sheet_count: await countSheets(bytes),
       kind: p.kind,
       is_prescription: p.kind === "prescription",
       auto_print: p.kind !== "ad",

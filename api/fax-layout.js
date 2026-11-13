@@ -1,7 +1,7 @@
 import { Redis } from "@upstash/redis";
 import { PDFDocument } from "pdf-lib";
 import { getSession } from "./_session.js";
-import { buildItemPdf, normalizeTurn } from "./_pdf-utils.js";
+import { buildItemPdf, countSheets, normalizeTurn } from "./_pdf-utils.js";
 
 const redis = Redis.fromEnv();
 const ID_RE = /^[A-Za-z0-9_-]+$/;
@@ -19,6 +19,7 @@ export async function rebuildItemPdf(record) {
     layout: record.layout || { fit: "auto", zoom: 1 },
   });
   await redis.set(`fax:pdf:${record.id}`, Buffer.from(bytes).toString("base64"), { ex: TTL });
+  record.sheet_count = await countSheets(bytes); // 向きを変えると横長になり、枚数が変わることがある
   return true;
 }
 
