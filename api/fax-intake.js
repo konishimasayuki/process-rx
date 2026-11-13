@@ -85,6 +85,7 @@ export default async function handler(req, res) {
 
   let rawGroups = null;
   let rawSender = null;
+  const turns = {}; // ページごとの追加の回転(横倒しの処方箋をまっすぐに)
   if (classified.error) {
     const err = classified.error;
     console.error("fax classify failed:", err.kind, String(err));
@@ -118,6 +119,7 @@ export default async function handler(req, res) {
       extracted: g.extracted || null,
       needs_review: !!g.needs_review,
     }));
+    grouped.forEach((g) => Object.assign(turns, g.turns || {}));
   }
 
   const groups = normalizeGroups(rawGroups, pageCount).map((g, i) => ({
@@ -142,10 +144,12 @@ export default async function handler(req, res) {
 
     const layout = { fit: "auto", zoom: 1 };
     const groupCrops = Object.fromEntries(g.pages.filter((n) => crops[String(n)]).map((n) => [String(n), crops[String(n)]]));
+    const groupTurns = Object.fromEntries(g.pages.filter((n) => turns[String(n)]).map((n) => [String(n), turns[String(n)]]));
     const mergedBytes = await buildItemPdf(srcDoc, {
       kind: g.kind,
       source_pages: g.pages,
       crops: groupCrops,
+      turns: groupTurns,
       layout,
     });
     const mergedBase64 = Buffer.from(mergedBytes).toString("base64");
@@ -178,6 +182,7 @@ export default async function handler(req, res) {
       needs_review:
         g.kind === "prescription" && (g.needs_review || !g.extracted || !g.extracted.patient_name),
       crops: groupCrops,
+      turns: groupTurns,
       layout,
       has_pdf: hasPdf,
       extracted: g.extracted,

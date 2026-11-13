@@ -10,6 +10,7 @@ export default function FaxPreviewPanel({ item, onItemUpdated }) {
 
   const [viewZoom, setViewZoom] = useState(1); // 画面で見る拡大(1=幅いっぱい)
   const [layout, setLayout] = useState(item.layout || { fit: "auto", zoom: 1 });
+  const [turns, setTurns] = useState(item.turns || {});
   const [version, setVersion] = useState(item.pdf_updated_at || item.edited_at || item.received_at);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -18,8 +19,9 @@ export default function FaxPreviewPanel({ item, onItemUpdated }) {
 
   useEffect(() => () => clearTimeout(timer.current), []);
 
-  function apply(next) {
+  function apply(next, nextTurns = turns) {
     setLayout(next);
+    setTurns(nextTurns);
     setError("");
     clearTimeout(timer.current);
     timer.current = setTimeout(async () => {
@@ -28,7 +30,7 @@ export default function FaxPreviewPanel({ item, onItemUpdated }) {
         const res = await fetch("/api/fax-layout", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: item.id, fit: next.fit, zoom: next.zoom }),
+          body: JSON.stringify({ id: item.id, fit: next.fit, zoom: next.zoom, turns: nextTurns }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -46,6 +48,15 @@ export default function FaxPreviewPanel({ item, onItemUpdated }) {
   }
 
   const percent = Math.round(layout.zoom * 100);
+  // ページを90度ずつ回す(元のページ番号ごと)
+  const rotate = (page, delta) => {
+    const cur = turns[String(page)] || 0;
+    const next = (((cur + delta) % 360) + 360) % 360;
+    const nextTurns = { ...turns };
+    if (next) nextTurns[String(page)] = next;
+    else delete nextTurns[String(page)];
+    apply(layout, nextTurns);
+  };
   const src = (page) =>
     `/api/fax-preview?id=${encodeURIComponent(item.id)}&page=${page}&w=1300&v=${encodeURIComponent(version || "")}`;
 
@@ -114,7 +125,25 @@ export default function FaxPreviewPanel({ item, onItemUpdated }) {
               元に戻す
             </button>
           </div>
-          <p style={styles.hint}>文字がはみ出すときは「−」、余白が大きいときは「＋」を押してください。</p>
+          <div style={styles.turnBox}>
+            <span style={styles.toolLabel}>向き</span>
+            <div style={styles.turnList}>
+              {(item.source_pages || []).map((page) => (
+                <span key={page} style={styles.turnItem}>
+                  <span style={styles.turnPage}>{page}頁</span>
+                  <button type="button" style={styles.turnButton} aria-label={`${page}頁を左に回す`} onClick={() => rotate(page, -90)}>
+                    ⟲
+                  </button>
+                  <button type="button" style={styles.turnButton} aria-label={`${page}頁を右に回す`} onClick={() => rotate(page, 90)}>
+                    ⟳
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
+          <p style={styles.hint}>
+            文字がはみ出すときは「−」、余白が大きいときは「＋」。文字が横や逆さまのときは「向き」で回してください。
+          </p>
           {error && <p style={styles.error}>{error}</p>}
         </div>
       )}
@@ -169,6 +198,11 @@ const styles = {
   segActive: { ...seg, borderRadius: "6px 0 0 6px", background: "#2563eb", color: "#fff", borderColor: "#2563eb" },
   zoomRow: { display: "flex", alignItems: "center", gap: "0.4rem" },
   hint: { fontSize: "0.72rem", color: "#888", margin: 0 },
+  turnBox: { display: "flex", alignItems: "flex-start", gap: "0.4rem" },
+  turnList: { display: "flex", flexWrap: "wrap", gap: "0.5rem" },
+  turnItem: { display: "inline-flex", alignItems: "center", gap: "0.25rem" },
+  turnPage: { fontSize: "0.78rem", color: "#333" },
+  turnButton: { ...btn, minWidth: "2rem", height: "2rem", fontSize: "1.1rem" },
   error: { fontSize: "0.8rem", color: "#dc2626", margin: 0 },
 };
 styles.segRight = { ...seg, borderRadius: "0 6px 6px 0", borderLeft: "none" };

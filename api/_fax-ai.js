@@ -1,4 +1,4 @@
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, degrees } from "pdf-lib";
 import { normalizeText } from "./_fax-utils.js";
 
 const MODEL = process.env.CLAUDE_MODEL || "claude-sonnet-5-5";
@@ -82,6 +82,12 @@ FAXの画質が粗くても、文字の形から最も確からしい読みを�
 保険者番号・記号番号・生年月日は、同じ人のページかどうかの判断に使うので、読めた範囲で書く。
 読めない項目はnullにする(推測で作らない)。
 
+文字の向き(text_top): 送る側が用紙を横にして送ったなどで、ページ画像の中で処方箋が横倒し・逆さまになっていることがある。
+処方箋の本体(「処方箋」の表題や患者名などの文字)の「文字の上側」が、ページ画像のどちらを向いているかを答える。
+  "up" = 普通に読める向き / "right" = 文字の上側が右を向いている(右に倒れている) /
+  "down" = 逆さま / "left" = 文字の上側が左を向いている(左に倒れている)
+FAXの端に入る受信日時・FAX番号などのヘッダー行ではなく、処方箋の本体の文字で判断すること。
+
 出力はJSONオブジェクトのみ(前置き・説明・コードフェンスは不要):
 {
   "sender": "このFAXの送信元(医療機関名)。FAXの端の送信元表示・送付状・処方箋の医療機関名から。不明ならnull",
@@ -95,7 +101,8 @@ FAXの画質が粗くても、文字の形から最も確からしい読みを�
       "insurer_number": "保険者番号(数字)",
       "insured_symbol_number": "被保険者証の記号・番号",
       "institution": "医療機関名",
-      "continues_previous": false
+      "continues_previous": false,
+      "text_top": "up"
     }
   ]
 }
@@ -151,6 +158,12 @@ function mergeIdentity(target, from) {
 }
 
 // 1段階目の結果から、ページのまとまり(グループ)を作る
+// 文字の上側の向き → まっすぐにするために時計回りに回す角度
+const TURN_BY_TEXT_TOP = { up: 0, right: 270, down: 180, left: 90 };
+export function turnFromTextTop(textTop) {
+  return TURN_BY_TEXT_TOP[String(textTop || "").toLowerCase()] ?? 0;
+}
+
 export function groupPages(pageInfos, pageCount) {
   const byPage = new Map();
   for (const p of pageInfos) {
@@ -177,12 +190,14 @@ export function groupPages(pageInfos, pageCount) {
       }
     }
 
+    const turn = turnFromTextTop(info.text_top);
     if (join) {
       cur.pages.push(n);
       mergeIdentity(cur.identity, id);
       cur.infos.push(info);
+      if (turn) cur.turns[String(n)] = turn;
     } else {
-      cur = { pages: [n], kind, identity: { ...id }, infos: [info] };
+      cur = { pages: [n], kind, identity: { ...id }, infos: [info], turns: turn ? { [String(n)]: turn } : {} };
       groups.push(cur);
     }
   }
@@ -238,15 +253,20 @@ FAXの画質が粗くても、文字の形から最も確からしい読みを�
   "unclear_fields": ["読み取りに自信がない項目名"]
 }`;
 
-async function subsetBase64(srcDoc, pages) {
+// 指定ページだけのPDF。横倒しのページは、まっすぐに回してからAIに読ませる(読み取りの精度が上がる)
+async function subsetBase64(srcDoc, pages, turns = {}) {
   const out = await PDFDocument.create();
   const copied = await out.copyPages(srcDoc, pages.map((n) => n - 1));
-  copied.forEach((p) => out.addPage(p));
+  copied.forEach((p, i) => {
+    const turn = turns[String(pages[i])] || 0;
+    if (turn) p.setRotation(degrees(((p.getRotation().angle || 0) + turn) % 360));
+    out.addPage(p);
+  });
   return Buffer.from(await out.save()).toString("base64");
 }
 
 export async function extractGroup(srcDoc, group, timeoutMs) {
-  const pdfBase64 = await subsetBase64(srcDoc, group.pages);
+  const pdfBase64 = await subsetBase64(srcDoc, group.pages, group.turns || {});
   return callClaude({
     system: EXTRACT_PROMPT,
     pdfBase64,

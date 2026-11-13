@@ -9,11 +9,9 @@ import {
   rgb,
 } from "pdf-lib";
 
-// A4横(pt)。1ページだけのときはA4縦
+// A4横(pt)
 const SHEET_W = 841.89;
 const SHEET_H = 595.28;
-const PORTRAIT_W = 595.28;
-const PORTRAIT_H = 841.89;
 const MARGIN = 14;
 const GAP = 10;
 const MAX_SCALE = 1.6; // 拡大しすぎない(FAXの画像は元が粗いため)
@@ -104,10 +102,15 @@ function fullBox(page) {
   return { left: cb.x, bottom: cb.y, right: cb.x + cb.width, top: cb.y + cb.height };
 }
 
-// ページを取り込み、表示上の(回転後の)幅・高さも返す
-async function embedUpright(out, srcPage, crop) {
-  const rot = rotationOf(srcPage);
-  const ep = await out.embedPage(srcPage, crop ? cropToBox(srcPage, crop, rot) : fullBox(srcPage));
+export const normalizeTurn = (t) => ((Math.round((Number(t) || 0) / 90) * 90) % 360 + 360) % 360;
+
+// ページを取り込み、表示上の(回転後の)幅・高さも返す。
+//   crop : PDFの表示上(ページの回転指定を適用した状態)での内容の範囲
+//   turn : さらに時計回りに回す角度(画像の中で処方箋が横倒しのとき。AIが判断・人が修正)
+async function embedUpright(out, srcPage, crop, turn = 0) {
+  const pageRot = rotationOf(srcPage);
+  const ep = await out.embedPage(srcPage, crop ? cropToBox(srcPage, crop, pageRot) : fullBox(srcPage));
+  const rot = (pageRot + normalizeTurn(turn)) % 360;
   const swap = rot === 90 || rot === 270;
   return { ep, rot, w: swap ? ep.height : ep.width, h: swap ? ep.width : ep.height };
 }
@@ -135,15 +138,17 @@ function drawInSlot(sheet, item, slotX, slotY, slotW, slotH, scale) {
   sheet.pushOperators(popGraphicsState());
 }
 
-// 指定ページ(0始まりのindex配列)を並べたPDFにする。
-// - 2ページずつ A4横の用紙に左右で並べる
-// - 1ページだけ(1枚の処方箋、または奇数ページの最後)は A4縦に1ページで大きく
+// 指定ページ(0始まりのindex配列)を、A4横の用紙に左右2ページずつ並べたPDFにする。
+// 3ページ以上なら2ページごとに用紙を増やす。1ページだけの用紙は左側(端)に寄せる。
 //   options.crops : ページごとの内容の範囲(表示上の割合)。あれば、その範囲だけを大きく並べる
+//   options.turns : ページごとの追加の回転(時計回り・度)。横倒しの処方箋をまっすぐにする
 //   options.fit   : "auto"=範囲に合わせて拡大 / "full"=ページ全体
 //   options.zoom  : 拡大率の倍率(0.5〜2)。人が調整する
 export async function buildTwoUpPdf(srcDoc, pageIndexes, options = {}) {
-  const { crops = [], fit = "auto", zoom = 1 } = options;
+  const { crops = [], turns = [], fit = "auto", zoom = 1 } = options;
   const out = await PDFDocument.create();
+  const slotW = (SHEET_W - MARGIN * 2 - GAP) / 2;
+  const slotH = SHEET_H - MARGIN * 2;
   const zoomFactor = Math.min(2, Math.max(0.5, Number(zoom) || 1));
 
   for (let i = 0; i < pageIndexes.length; i += 2) {
@@ -151,21 +156,9 @@ export async function buildTwoUpPdf(srcDoc, pageIndexes, options = {}) {
     const items = [];
     for (let k = 0; k < slice.length; k++) {
       const crop = fit === "auto" ? crops[i + k] : null;
-      items.push(await embedUpright(out, srcDoc.getPage(slice[k]), crop || null));
+      items.push(await embedUpright(out, srcDoc.getPage(slice[k]), crop || null, turns[i + k] || 0));
     }
 
-    if (items.length === 1) {
-      const slotW = PORTRAIT_W - MARGIN * 2;
-      const slotH = PORTRAIT_H - MARGIN * 2;
-      const it = items[0];
-      const scale = Math.min(Math.min(slotW / it.w, slotH / it.h), MAX_SCALE) * zoomFactor;
-      const sheet = out.addPage([PORTRAIT_W, PORTRAIT_H]);
-      drawInSlot(sheet, it, MARGIN, MARGIN, slotW, slotH, scale);
-      continue;
-    }
-
-    const slotW = (SHEET_W - MARGIN * 2 - GAP) / 2;
-    const slotH = SHEET_H - MARGIN * 2;
     // 左右で同じ倍率にそろえる(大きいほうに合わせる)
     const fitScale = Math.min(...items.map((it) => Math.min(slotW / it.w, slotH / it.h)));
     const scale = Math.min(fitScale, MAX_SCALE) * zoomFactor;
@@ -196,12 +189,13 @@ export async function buildPlainPdf(srcDoc, pageIndexes) {
 }
 
 // 区分に応じて、保存するPDFを作る
-export async function buildItemPdf(srcDoc, { kind, source_pages, crops, layout }) {
+export async function buildItemPdf(srcDoc, { kind, source_pages, crops, turns, layout }) {
   const indexes = source_pages.map((n) => n - 1);
   if (kind === "ad") return buildPlainPdf(srcDoc, indexes);
   const cropList = kind === "prescription" ? source_pages.map((n) => crops?.[String(n)] || null) : [];
   return buildTwoUpPdf(srcDoc, indexes, {
     crops: cropList,
+    turns: source_pages.map((n) => turns?.[String(n)] || 0),
     fit: layout?.fit === "full" ? "full" : "auto",
     zoom: layout?.zoom || 1,
   });
