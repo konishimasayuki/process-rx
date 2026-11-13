@@ -21,7 +21,11 @@ const TABS = [
 
 // 従業員ログイン時のスマホ画面(下にメニュー)
 export default function MobileApp({ session, onLogout, onSwitchToAdmin }) {
-  const [tab, setTab] = useState("home");
+  // 通知をタップして開いたとき(/?tab=fax)は、そのタブから
+  const [tab, setTab] = useState(() => {
+    const t = new URLSearchParams(window.location.search).get("tab");
+    return ["delivery", "fax", "home", "timecard", "settings"].includes(t) ? t : "home";
+  });
 
   return (
     <div style={styles.app}>

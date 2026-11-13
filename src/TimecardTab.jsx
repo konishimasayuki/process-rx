@@ -128,6 +128,7 @@ export default function TimecardTab() {
           );
         })}
       </div>
+      <p style={styles.locationNote}>📍 位置情報は、出勤・退勤のときに会社の近くかを確かめるためだけに使います。</p>
       {busy && <p style={styles.busy}>{busy}</p>}
       {error && <p style={styles.error}>{error}</p>}
 
@@ -226,6 +227,7 @@ const styles = {
   buttonGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.7rem", marginTop: "1rem" },
   punchButton: { padding: "1.3rem 0", borderRadius: "14px", border: "none", fontSize: "1.25rem", fontWeight: 700, cursor: "pointer" },
   busy: { textAlign: "center", color: "#2563eb", fontSize: "0.9rem" },
+  locationNote: { fontSize: "0.72rem", color: "#888", textAlign: "center", margin: "0.6rem 0 0" },
   error: { color: "#dc2626", fontSize: "0.85rem", textAlign: "center" },
   monthHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", margin: "1.5rem 0 0.6rem" },
   monthNav: { width: "2.4rem", height: "2.4rem", borderRadius: "8px", border: "1px solid #ddd", background: "#fff", fontSize: "1.2rem", cursor: "pointer" },

@@ -4,6 +4,7 @@ import FaxPreviewPanel from "./FaxPreviewPanel.jsx";
 import FaxPrintButton from "./FaxPrintButton.jsx";
 import RpEditor, { toRps } from "./RpEditor.jsx";
 import FaxRegroup from "./FaxRegroup.jsx";
+import { markFaxSeen } from "./pushClient.js";
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -109,6 +110,7 @@ export default function FaxQueue({ canManage = false }) {
 
   useEffect(() => {
     load();
+    markFaxSeen();
     const timer = setInterval(() => load(true), 30000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps

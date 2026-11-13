@@ -6,6 +6,7 @@ import { analyzePages } from "./_pdf-render.js";
 import { jstDate, pickSender } from "./_fax-utils.js";
 import { basicExtracted, classifyPages, extractGroup, fillFromBasic, groupPages } from "./_fax-ai.js";
 import { saveSummary, summaryOf } from "./_fax-store.js";
+import { notifyFax } from "./_push.js";
 
 const redis = Redis.fromEnv();
 
@@ -224,6 +225,17 @@ export default async function handler(req, res) {
   await saveSummary(redis, contentHash, savedRecords);
   await redis.sadd("fax:processed_hashes", contentHash);
   await redis.sadd("fax:processed_filenames", filename);
+
+  // スマホに通知(待ちすぎないよう最大4秒。失敗しても取込は成功扱い)
+  if (imported !== true) {
+    const patients = savedRecords.filter((r) => r.kind === "prescription").length;
+    await Promise.race([
+      notifyFax(redis, { faxId: contentHash, sender, patients, others: savedRecords.length - patients }).catch((err) =>
+        console.error("notify failed:", err)
+      ),
+      new Promise((r) => setTimeout(r, 4000)),
+    ]);
+  }
 
   timings.total_ms = Date.now() - started;
   res.status(200).json({
