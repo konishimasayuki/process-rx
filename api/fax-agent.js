@@ -88,11 +88,42 @@ export default async function handler(req, res) {
   }
 
   if (req.method === "POST") {
+    const body = req.body || {};
+
+    // 画面から、薬局PCのプリンタで印刷する(ログインしていれば誰でも可)
+    if (body.command === "print") {
+      const ids = (Array.isArray(body.ids) ? body.ids : []).filter((x) => /^[A-Za-z0-9_-]+$/.test(String(x))).slice(0, 20);
+      if (ids.length === 0) {
+        res.status(400).json({ error: "印刷するFAXを指定してください" });
+        return;
+      }
+      const current = parse(await redis.get("fax_agent:command"));
+      if (current && ["pending", "running"].includes(current.status)) {
+        const age = Date.now() - new Date(current.updated_at || current.requested_at).getTime();
+        if (age < 3 * 60 * 1000) {
+          res.status(409).json({ error: "薬局PCが別の作業中です。少し待ってからもう一度押してください" });
+          return;
+        }
+      }
+      const command = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        type: "print",
+        ids,
+        status: "pending",
+        requested_at: new Date().toISOString(),
+        requested_by: session.name,
+        progress: null,
+        result: null,
+      };
+      await redis.set("fax_agent:command", JSON.stringify(command), { ex: 60 * 60 * 24 });
+      res.status(200).json({ status: "ok", command });
+      return;
+    }
+
     if (!isAdmin(session)) {
       res.status(403).json({ error: "管理者のみ操作できます" });
       return;
     }
-    const body = req.body || {};
 
     if (body.command === "import_existing") {
       const count = Number(body.count);

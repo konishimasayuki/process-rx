@@ -28,7 +28,7 @@ from pathlib import Path
 import requests
 
 APP_TITLE = "process-rx FAX取込"
-AGENT_VERSION = "1.2.0"
+AGENT_VERSION = "1.3.0"
 API_BASE = "https://process-rx.vercel.app"
 DEFAULT_FAX_FOLDER = r"\\192.168.11.1\シェアード\fax"
 POLL_INTERVAL_SECONDS = 15
@@ -397,6 +397,27 @@ def download_pdf(item_id: str, config: dict):
     return res.content
 
 
+def item_kind(item: dict) -> str:
+    """prescription=処方箋 / cover=送付状など / ad=宣伝・広告(古い応答は処方箋かそれ以外)"""
+    return item.get("kind") or ("prescription" if item.get("is_prescription", True) else "cover")
+
+
+def should_auto_print(item: dict) -> bool:
+    """広告以外は自動で印刷する(送付状も印刷する)"""
+    if "auto_print" in item:
+        return bool(item["auto_print"])
+    return item_kind(item) != "ad"
+
+
+def item_label(item: dict) -> str:
+    kind = item_kind(item)
+    if kind == "cover":
+        return "送付状"
+    if kind == "ad":
+        return "広告"
+    return item.get("patient_name") or "名前不明"
+
+
 def process_file(pdf_path: Path, config: dict, settings: dict, state: dict, size: int) -> bool:
     """True: 取込完了(次回以降は無視) / False: 次回また試す"""
     if size > MAX_UPLOAD_BYTES:
@@ -439,11 +460,11 @@ def process_file(pdf_path: Path, config: dict, settings: dict, state: dict, size
             logger.error("合体PDFの取得に失敗しました。あとで再試行します")
             return False
 
-        label = item.get("patient_name") if item.get("is_prescription", True) else "処方箋以外"
-        out_path = day_dir / f"{stamp}_{index}_{safe_name(label)}.pdf"
+        out_path = day_dir / f"{stamp}_{index}_{safe_name(item_label(item))}.pdf"
         out_path.write_bytes(pdf_bytes)
 
-        if not item.get("is_prescription", True):
+        # 自動印刷は広告以外(処方箋・送付状)。広告は保存だけ。手動の印刷は画面の「印刷」から
+        if not should_auto_print(item):
             continue
         if not settings.get("auto_print") or item["id"] in state["printed"]:
             continue
@@ -453,12 +474,10 @@ def process_file(pdf_path: Path, config: dict, settings: dict, state: dict, size
             save_state(state)
             report_printed(item["id"], config)
 
-    names = "、".join(
-        safe_name(i.get("patient_name")) for i in items if i.get("is_prescription", True)
-    )
+    names = "、".join(safe_name(item_label(i)) for i in items)
     logger.info(
-        "完了: %d名分に合体 / %d件印刷  %s",
-        sum(1 for i in items if i.get("is_prescription", True)),
+        "完了: %d件に分けて合体 / %d件印刷  %s",
+        len(items),
         printed_count,
         names,
     )
@@ -539,9 +558,57 @@ def run_once(config: dict, settings: dict, state: dict) -> None:
             save_state(state)
 
 
+def handle_print_command(command: dict, config: dict, settings: dict, state: dict) -> None:
+    """画面の「印刷」ボタンからの依頼。指定されたFAXの合体PDFを取得して印刷する(自動印刷の設定に関係なく印刷)"""
+    cid = command["id"]
+    handled = state.setdefault("handled_commands", [])
+    results = state.setdefault("command_results", {})
+    if cid in handled:
+        report_command(config, cid, "done", result=results.get(cid))
+        return
+
+    ids = command.get("ids") or []
+    logger.info("画面からの依頼: %d件を印刷します", len(ids))
+    report_command(config, cid, "running", progress=f"0/{len(ids)}")
+    ensure_sumatra()
+
+    tmp_dir = output_dir() / "印刷用"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    result = {"printed": 0, "failed": 0}
+    for index, item_id in enumerate(ids, start=1):
+        pdf_bytes = download_pdf(item_id, config)
+        if pdf_bytes is None:
+            logger.error("印刷するPDFを取得できません: %s", item_id)
+            result["failed"] += 1
+            continue
+        path = tmp_dir / f"{safe_name(item_id)}.pdf"
+        path.write_bytes(pdf_bytes)
+        if print_pdf(path, settings):
+            result["printed"] += 1
+            state["printed"].add(item_id)
+            report_printed(item_id, config)
+        else:
+            result["failed"] += 1
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        report_command(config, cid, "running", progress=f"{index}/{len(ids)}")
+
+    handled.append(cid)
+    results[cid] = result
+    save_state(state)
+    report_command(config, cid, "done" if result["printed"] else "failed", result=result)
+    logger.info("印刷が終わりました: %d件成功 / %d件失敗", result["printed"], result["failed"])
+
+
 def handle_command(command: dict, config: dict, settings: dict, state: dict) -> None:
-    """画面からの依頼を実行する。いまは「フォルダにある既存FAXの取込」のみ。
-    新しい順に指定件数を取り込み(古い順にアップロード)、印刷や保存はしない。"""
+    """画面からの依頼を実行する。
+    - import_existing: フォルダにある既存FAXの取込。新しい順に指定件数を取り込み(古い順にアップロード)、印刷や保存はしない
+    - print: 画面で選んだFAXを印刷する"""
+    if command.get("type") == "print":
+        handle_print_command(command, config, settings, state)
+        return
     if command.get("type") != "import_existing":
         return
     cid = command["id"]

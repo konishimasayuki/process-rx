@@ -1,7 +1,8 @@
 import { Redis } from "@upstash/redis";
 import { PDFDocument } from "pdf-lib";
 import crypto from "crypto";
-import { buildTwoUpPdf, normalizeGroups } from "./_pdf-utils.js";
+import { buildItemPdf, normalizeGroups, sheetCount } from "./_pdf-utils.js";
+import { analyzePages } from "./_pdf-render.js";
 import { jstDate, pickSender } from "./_fax-utils.js";
 
 const redis = Redis.fromEnv();
@@ -18,7 +19,11 @@ FAXで届いた1通分のPDFが渡されます。1通のFAXの中には、複数
 1. 連続するページを「同じ患者さん」ごとにグループ分けする。
    - 患者氏名・生年月日・保険者番号・医療機関などで同じ人かを判断する。
    - 処方箋の2枚目、裏面、薬剤情報、お薬手帳の写し、疑義照会の回答などの続きのページは、直前の患者さんのグループに入れる。
-   - 送付状(表紙)など処方箋ではないページは、is_prescription を false にして別グループにする。
+   - 各グループに区分(kind)を付ける:
+       "prescription" = 処方箋(患者さんごと)
+       "cover" = 送付状・表紙・連絡文・問い合わせ・疑義照会など、処方箋以外の業務連絡
+       "ad" = 宣伝・広告・営業チラシ・製薬会社や卸の案内・キャンペーンなど
+     迷ったときは、処方箋は "prescription"、業務に関わる連絡は "cover" にする("ad" は明らかな宣伝だけ)。
    - すべてのページを、必ずちょうど1つのグループに入れる。ページ番号は1始まり。
 2. 各グループについて、処方箋の内容を読み取る。
 
@@ -30,7 +35,7 @@ FAXで届いた1通分のPDFが渡されます。1通のFAXの中には、複数
   "groups": [
     {
       "pages": [1, 2],
-      "is_prescription": true,
+      "kind": "prescription",
       "extracted": {
         "patient_name": "患者氏名",
         "patient_kana": "患者氏名カナ(不明ならnull)",
@@ -58,7 +63,7 @@ FAXで届いた1通分のPDFが渡されます。1通のFAXの中には、複数
 }
 
 読み取れない項目はnullにしてください。憶測で埋めないでください。
-処方箋ではないグループの extracted は null にしてください。`;
+kind が prescription 以外のグループの extracted は null にしてください。`;
 
 async function analyzeFax(base64Pdf, pageCount, apiKey) {
   const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -152,6 +157,25 @@ export default async function handler(req, res) {
   const pageCount = srcDoc.getPageCount();
 
   // 1) 患者さんごとのページ分類 + 内容読み取り
+  // 0) 各ページの「処方箋の本体の範囲」を調べる(余白を除いて大きく印刷するため)。失敗しても取込は続ける
+  const crops = {};
+  if (pageCount <= 20) {
+    try {
+      (await analyzePages(pdfBuffer)).forEach((box, i) => {
+        if (box) {
+          crops[String(i + 1)] = {
+            x0: +box.x0.toFixed(4),
+            y0: +box.y0.toFixed(4),
+            x1: +box.x1.toFixed(4),
+            y1: +box.y1.toFixed(4),
+          };
+        }
+      });
+    } catch (err) {
+      console.error("page analyze failed:", err);
+    }
+  }
+
   let rawGroups = null;
   let rawSender = null;
   try {
@@ -182,10 +206,14 @@ export default async function handler(req, res) {
     const id = `${contentHash}-${i + 1}`;
     const itemKey = `fax:item:${id}`;
 
-    const mergedBytes = await buildTwoUpPdf(
-      srcDoc,
-      g.pages.map((n) => n - 1)
-    );
+    const layout = { fit: "auto", zoom: 1 };
+    const groupCrops = Object.fromEntries(g.pages.filter((n) => crops[String(n)]).map((n) => [String(n), crops[String(n)]]));
+    const mergedBytes = await buildItemPdf(srcDoc, {
+      kind: g.kind,
+      source_pages: g.pages,
+      crops: groupCrops,
+      layout,
+    });
     const mergedBase64 = Buffer.from(mergedBytes).toString("base64");
     const hasPdf = mergedBase64.length <= MAX_STORED_PDF_BASE64;
     if (hasPdf) {
@@ -209,9 +237,13 @@ export default async function handler(req, res) {
       group_count: groups.length,
       source_pages: g.pages,
       source_page_count: pageCount,
-      sheet_count: Math.ceil(g.pages.length / 2),
+      sheet_count: sheetCount(g.kind, g.pages.length),
+      kind: g.kind,
       is_prescription: g.is_prescription,
-      needs_review: g.needs_review || !g.extracted,
+      auto_print: g.kind !== "ad", // 広告以外は自動で印刷する
+      needs_review: g.kind === "prescription" && (g.needs_review || !g.extracted),
+      crops: groupCrops,
+      layout,
       has_pdf: hasPdf,
       extracted: g.extracted,
     };
@@ -228,8 +260,15 @@ export default async function handler(req, res) {
       pages: g.pages,
       patient_name: g.extracted?.patient_name || null,
       is_prescription: g.is_prescription,
+      kind: g.kind,
+      auto_print: g.kind !== "ad",
       has_pdf: hasPdf,
     });
+  }
+
+  // 元のPDFは、拡大率の調整などで作り直すために保存しておく
+  if (pdf_base64.length <= MAX_STORED_PDF_BASE64) {
+    await redis.set(`fax:src:${contentHash}`, pdf_base64, { ex: PDF_TTL_SECONDS });
   }
 
   await redis.set(`fax:hash_items:${contentHash}`, JSON.stringify(summaryItems), {

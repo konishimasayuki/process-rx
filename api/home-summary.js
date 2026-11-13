@@ -2,6 +2,7 @@ import { Redis } from "@upstash/redis";
 import { getSession, isAdmin } from "./_session.js";
 import { listEmployees } from "./_employees.js";
 import { jstDateOf, shiftDate, summarize } from "./_timecard-utils.js";
+import { shouldAutoPrint } from "./_pdf-utils.js";
 
 const redis = Redis.fromEnv();
 
@@ -43,7 +44,8 @@ export default async function handler(req, res) {
     fax: {
       faxes: new Set(liveItems.map((i) => i.fax_id || i.filename)).size,
       patients: prescriptions.length,
-      unprinted: prescriptions.filter((i) => !i.printed_at).length,
+      // 未印刷: 自動印刷の対象(広告以外)でまだ印刷されていないもの
+      unprinted: liveItems.filter((i) => shouldAutoPrint(i) && !i.printed_at).length,
       needs_review: prescriptions.filter((i) => i.needs_review).length,
     },
     delivery: { today: deliveriesToday || 0, unassigned: unassigned || 0 },

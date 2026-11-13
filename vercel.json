@@ -4,7 +4,22 @@
   "outputDirectory": "dist",
   "functions": {
     "api/fax-intake.js": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "includeFiles": "node_modules/@napi-rs/**"
+    },
+    "api/fax-preview.js": {
+      "maxDuration": 30,
+      "includeFiles": "node_modules/@napi-rs/**"
+    },
+    "api/fax-layout.js": {
+      "maxDuration": 30
+    },
+    "api/fax-edit.js": {
+      "maxDuration": 30
+    },
+    "api/fax-selftest.js": {
+      "maxDuration": 30,
+      "includeFiles": "node_modules/@napi-rs/**"
     }
   }
 }

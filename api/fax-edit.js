@@ -1,5 +1,7 @@
 import { Redis } from "@upstash/redis";
 import { hasValidSession } from "./_require-session.js";
+import { KINDS, sheetCount } from "./_pdf-utils.js";
+import { rebuildItemPdf } from "./fax-layout.js";
 
 const redis = Redis.fromEnv();
 const ID_RE = /^[A-Za-z0-9_-]+$/;
@@ -60,7 +62,26 @@ export default async function handler(req, res) {
     if (body[key] !== undefined) fields[key] = String(body[key] || "").trim() || null;
   }
   rec.extracted = { ...(rec.extracted || {}), ...fields };
-  if (body.is_prescription !== undefined) rec.is_prescription = !!body.is_prescription;
+  if (body.is_prescription !== undefined && body.kind === undefined) {
+    body.kind = body.is_prescription ? "prescription" : "cover";
+  }
+  if (body.kind !== undefined) {
+    if (!KINDS.includes(body.kind)) return res.status(400).json({ error: "区分が不正です" });
+    const changed = body.kind !== (rec.kind || (rec.is_prescription ? "prescription" : "cover"));
+    rec.kind = body.kind;
+    rec.is_prescription = body.kind === "prescription";
+    rec.auto_print = body.kind !== "ad";
+    rec.sheet_count = sheetCount(rec.kind, (rec.source_pages || []).length);
+    if (changed) {
+      // 区分が変わると並べ方が変わる(広告は合体しない)ので、PDFを作り直す
+      rec.pdf_updated_at = now;
+      try {
+        await rebuildItemPdf(rec);
+      } catch (err) {
+        console.error("rebuild failed:", err);
+      }
+    }
+  }
   rec.needs_review = false;
   rec.edited_at = now;
   await saveItem(rec);

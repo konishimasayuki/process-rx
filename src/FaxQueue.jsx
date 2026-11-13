@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Modal from "./Modal.jsx";
+import FaxPreviewPanel from "./FaxPreviewPanel.jsx";
+import FaxPrintButton from "./FaxPrintButton.jsx";
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -25,6 +27,11 @@ function pagesLabel(pages) {
   if (!pages || pages.length === 0) return "—";
   return pages.length === 1 ? `${pages[0]}頁` : `${pages[0]}-${pages[pages.length - 1]}頁`;
 }
+
+const KIND_LABELS = { prescription: "処方箋", cover: "送付状など", ad: "広告・宣伝" };
+const kindOf = (item) => item.kind || (item.is_prescription ? "prescription" : "cover");
+// 自動印刷の対象か(広告以外。古い記録は処方箋だけ)
+const autoPrintOf = (item) => (item.auto_print !== undefined ? !!item.auto_print : !!item.is_prescription);
 
 // 画面に表示する時刻(取り込んだ過去分は元の受信時刻)
 function displayTime(item) {
@@ -153,7 +160,7 @@ export default function FaxQueue({ canManage = false }) {
       patient_name: item.extracted?.patient_name || "",
       patient_kana: item.extracted?.patient_kana || "",
       birth_date: item.extracted?.birth_date || "",
-      is_prescription: item.is_prescription,
+      kind: kindOf(item),
     });
   }
 
@@ -167,7 +174,7 @@ export default function FaxQueue({ canManage = false }) {
         patient_name: editing.patient_name,
         patient_kana: editing.patient_kana,
         birth_date: editing.birth_date,
-        is_prescription: editing.is_prescription,
+        kind: editing.kind,
       }),
     });
     const data = await res.json().catch(() => ({}));
@@ -353,7 +360,7 @@ export default function FaxQueue({ canManage = false }) {
         faxes.map((rows) => {
           const first = rows[0];
           const sender = senderOf(rows);
-          const patients = rows.filter((r) => r.is_prescription).length;
+          const patients = rows.filter((r) => kindOf(r) === "prescription").length;
           return (
             <section key={first.fax_id || first.id} style={styles.faxBlock}>
               <button
@@ -383,7 +390,7 @@ export default function FaxQueue({ canManage = false }) {
                 <button key={item.id} style={styles.row} onClick={() => openEdit(item, rows)}>
                   <span style={styles.pages}>{pagesLabel(item.source_pages)}</span>
                   <span style={styles.main}>
-                    {item.is_prescription ? (
+                    {kindOf(item) === "prescription" ? (
                       <>
                         <span style={item.extracted?.patient_name ? styles.name : styles.nameUnknown}>
                           {item.extracted?.patient_name || "名前を読み取れず"}
@@ -394,20 +401,22 @@ export default function FaxQueue({ canManage = false }) {
                         )}
                       </>
                     ) : (
-                      <span style={styles.other}>送付状など(処方箋以外)</span>
+                      <span style={styles.other}>
+                        {kindOf(item) === "ad" ? "広告・宣伝(合体なし)" : "送付状など"}
+                      </span>
                     )}
                   </span>
                   <span style={styles.badges}>
-                    {item.needs_review && item.is_prescription && (
+                    {item.needs_review && kindOf(item) === "prescription" && (
                       <span style={styles.badgeOrange}>要確認</span>
                     )}
-                    {item.is_prescription &&
-                      !item.imported &&
+                    {kindOf(item) === "ad" && <span style={styles.badgeAd}>広告</span>}
+                    {!item.imported &&
                       (item.printed_at ? (
                         <span style={styles.badgeGreen}>印刷済</span>
-                      ) : (
+                      ) : autoPrintOf(item) ? (
                         <span style={styles.badgeGray}>未印刷</span>
-                      ))}
+                      ) : null)}
                   </span>
                 </button>
               ))}
@@ -417,7 +426,7 @@ export default function FaxQueue({ canManage = false }) {
       )}
 
       {editing && (
-        <Modal title="処方箋の確認・修正" onClose={() => setEditing(null)}>
+        <Modal title="確認・修正" onClose={() => setEditing(null)}>
           <form style={styles.form} onSubmit={saveEdit}>
             <div style={styles.infoBox}>
               <div>送信元: {editing.sender || "不明"}</div>
@@ -426,43 +435,72 @@ export default function FaxQueue({ canManage = false }) {
                 {pagesLabel(editing.item.source_pages)}(全{editing.item.source_page_count}頁)
               </div>
             </div>
-            <button type="button" style={styles.pdfButton} onClick={() => openPdf(editing.item)}>
-              PDFを開く
-            </button>
+
+            {editing.item.has_pdf ? (
+              <FaxPreviewPanel
+                key={editing.item.id}
+                item={editing.item}
+                onItemUpdated={(updated) => {
+                  applyUpdated([updated]);
+                  setEditing((prev) => (prev ? { ...prev, item: updated } : prev));
+                }}
+              />
+            ) : (
+              <p style={styles.note}>このPDFは大きすぎて保存されていないため、プレビューはありません。</p>
+            )}
+
+            <div style={styles.pdfButtons}>
+              <button type="button" style={styles.pdfButton} onClick={() => openPdf(editing.item)}>
+                PDFを開く
+              </button>
+              {editing.item.has_pdf && <FaxPrintButton ids={[editing.item.id]} />}
+            </div>
 
             <label style={styles.label}>
-              患者名
-              <input
+              区分
+              <select
                 style={styles.input}
-                value={editing.patient_name}
-                onChange={(e) => setEditing({ ...editing, patient_name: e.target.value })}
-              />
+                value={editing.kind}
+                onChange={(e) => setEditing({ ...editing, kind: e.target.value })}
+              >
+                {Object.entries(KIND_LABELS).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v}
+                    {k === "ad" ? "(自動印刷しない・合体しない)" : ""}
+                  </option>
+                ))}
+              </select>
             </label>
-            <label style={styles.label}>
-              フリガナ
-              <input
-                style={styles.input}
-                value={editing.patient_kana}
-                onChange={(e) => setEditing({ ...editing, patient_kana: e.target.value })}
-              />
-            </label>
-            <label style={styles.label}>
-              生年月日
-              <input
-                style={styles.input}
-                type="date"
-                value={editing.birth_date}
-                onChange={(e) => setEditing({ ...editing, birth_date: e.target.value })}
-              />
-            </label>
-            <label style={styles.checkRow}>
-              <input
-                type="checkbox"
-                checked={!editing.is_prescription}
-                onChange={(e) => setEditing({ ...editing, is_prescription: !e.target.checked })}
-              />
-              処方箋ではない(送付状など)
-            </label>
+
+            {editing.kind === "prescription" && (
+              <>
+                <label style={styles.label}>
+                  患者名
+                  <input
+                    style={styles.input}
+                    value={editing.patient_name}
+                    onChange={(e) => setEditing({ ...editing, patient_name: e.target.value })}
+                  />
+                </label>
+                <label style={styles.label}>
+                  フリガナ
+                  <input
+                    style={styles.input}
+                    value={editing.patient_kana}
+                    onChange={(e) => setEditing({ ...editing, patient_kana: e.target.value })}
+                  />
+                </label>
+                <label style={styles.label}>
+                  生年月日
+                  <input
+                    style={styles.input}
+                    type="date"
+                    value={editing.birth_date}
+                    onChange={(e) => setEditing({ ...editing, birth_date: e.target.value })}
+                  />
+                </label>
+              </>
+            )}
 
             {saveError && <p style={styles.error}>{saveError}</p>}
             <div style={styles.formButtons}>
@@ -729,6 +767,8 @@ const styles = {
   badgeOrange: { ...badge, background: "#fff7ed", color: "#c2410c" },
   badgeDemo: { ...badge, background: "#fef3c7", color: "#92400e" },
   badgeImport: { ...badge, background: "#e0e7ff", color: "#3730a3" },
+  badgeAd: { ...badge, background: "#fef3c7", color: "#92400e" },
+  pdfButtons: { display: "flex", flexDirection: "column", gap: "0.5rem" },
   dangerSub: {
     padding: "0.4rem 0.8rem",
     borderRadius: "6px",
