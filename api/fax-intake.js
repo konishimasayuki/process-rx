@@ -3,7 +3,7 @@ import { PDFDocument } from "pdf-lib";
 import crypto from "crypto";
 import { buildItemPdf, countSheets, normalizeGroups } from "./_pdf-utils.js";
 import { analyzePages } from "./_pdf-render.js";
-import { SAFETY_TTL_SECONDS as PDF_TTL_SECONDS, jstDate, pickSender } from "./_fax-utils.js";
+import { SAFETY_TTL_SECONDS as PDF_TTL_SECONDS, jstDate, pickSender, rxDetailsEnabled } from "./_fax-utils.js";
 import {
   basicExtracted,
   classifyPages,
@@ -145,6 +145,11 @@ export default async function handler(req, res) {
     await Promise.all(
       grouped.map(async (g) => {
         if (g.kind !== "prescription") return;
+        // 処方内容を読まない設定(初期): ページ分けで読めた名前などだけで済ませる(AIの呼び出しが減る)
+        if (!rxDetailsEnabled()) {
+          g.extracted = basicExtracted(g);
+          return;
+        }
         if (deferExtract) {
           // 印刷を急ぐ: 1段階目で読めた名前などだけ入れておき、詳しい読み取りは後で
           g.extracted = basicExtracted(g);

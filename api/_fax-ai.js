@@ -336,6 +336,24 @@ FAXの画質が粗くても、文字の形から最も確からしい読みを�
 }`;
 
 // 指定ページだけのPDF。横倒しのページは、まっすぐに回してからAIに読ませる(読み取りの精度が上がる)
+// 名前・保険者番号などの本人情報だけを読む軽い版(処方内容の薬は読まない)
+const LIGHT_EXTRACT_PROMPT = `あなたは調剤薬局のスタッフです。1人の患者さんの処方箋(1〜数ページ)のPDFが渡されます。
+患者さんを見分けるための情報だけを読み取ってください。処方内容(薬・用法・日数)は読みません。
+FAXの画質が粗くても、文字の形から最も確からしい読みを書いてください。読めない項目はnull(推測で作らない)。
+氏名とフリガナ(ふりがな)は両方読むこと。
+
+出力はJSONオブジェクトのみ(前置き・説明・コードフェンスは不要):
+{
+  "patient_name": "氏名",
+  "patient_kana": "フリガナ",
+  "birth_date": "YYYY-MM-DD",
+  "sex": "男 or 女",
+  "insurer_number": "保険者番号",
+  "insured_symbol_number": "被保険者証の記号・番号",
+  "issuing_institution": "医療機関名",
+  "confidence": "high/medium/low"
+}`;
+
 async function subsetBase64(srcDoc, pages, turns = {}) {
   const out = await PDFDocument.create();
   const copied = await out.copyPages(srcDoc, pages.map((n) => n - 1));
@@ -347,13 +365,14 @@ async function subsetBase64(srcDoc, pages, turns = {}) {
   return Buffer.from(await out.save()).toString("base64");
 }
 
-export async function extractGroup(srcDoc, group, timeoutMs) {
+// light: true … 本人情報だけを読む(処方内容は読まない。出力が少なく、安い)
+export async function extractGroup(srcDoc, group, timeoutMs, { light = false } = {}) {
   const pdfBase64 = await subsetBase64(srcDoc, group.pages, group.turns || {});
   return callClaude({
-    system: EXTRACT_PROMPT,
+    system: light ? LIGHT_EXTRACT_PROMPT : EXTRACT_PROMPT,
     pdfBase64,
     text: `この患者さんの処方箋(全${group.pages.length}ページ)を読み取ってください。`,
-    maxTokens: 8_000,
+    maxTokens: light ? 3_000 : 8_000,
     timeoutMs,
   });
 }

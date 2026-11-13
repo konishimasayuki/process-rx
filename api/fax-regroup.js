@@ -5,7 +5,7 @@ import { buildItemPdf, countSheets } from "./_pdf-utils.js";
 import { extractGroup, fillFromBasic } from "./_fax-ai.js";
 import { detectOrientations } from "./_fax-orient.js";
 import { recordAiStatus } from "./_ai-status.js";
-import { SAFETY_TTL_SECONDS as TTL, jstDate } from "./_fax-utils.js";
+import { SAFETY_TTL_SECONDS as TTL, jstDate, rxDetailsEnabled } from "./_fax-utils.js";
 import { loadFaxItems, parse, saveSummary } from "./_fax-store.js";
 
 const redis = Redis.fromEnv();
@@ -104,7 +104,9 @@ export default async function handler(req, res) {
       .map(async (p) => {
         const fallbackInfo = p.inherit && p.base.extracted ? [{ ...p.base.extracted, institution: p.base.extracted.issuing_institution }] : [];
         try {
-          const detail = await extractGroup(srcDoc, { pages: p.pages, turns: pick(allTurns, p.pages) }, 40_000);
+          const detail = await extractGroup(srcDoc, { pages: p.pages, turns: pick(allTurns, p.pages) }, 40_000, {
+            light: !rxDetailsEnabled(),
+          });
           p.extracted = fillFromBasic(detail, { infos: fallbackInfo });
           await recordAiStatus(redis, null);
         } catch (err) {

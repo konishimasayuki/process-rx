@@ -33,3 +33,7 @@ export function pickSender(explicitSender, groups) {
 export const RETENTION_DAYS = 3;
 // 自動削除が動かなかったときの保険(PDFはこの日数で自然に消える)
 export const SAFETY_TTL_SECONDS = 60 * 60 * 24 * 10;
+
+// 処方内容(薬・用法・日数)をAIで読むか。初期は読まない(名前・保険者番号・送信元・向きだけ読む)。
+// 読ませたいときは、Vercelの環境変数 READ_RX_DETAILS を 1 にする
+export const rxDetailsEnabled = () => process.env.READ_RX_DETAILS === "1";

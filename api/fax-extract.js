@@ -4,6 +4,7 @@ import { getSession } from "./_session.js";
 import { extractGroup, fillFromBasic } from "./_fax-ai.js";
 import { loadFaxItems, saveSummary } from "./_fax-store.js";
 import { recordAiStatus } from "./_ai-status.js";
+import { rxDetailsEnabled } from "./_fax-utils.js";
 
 const redis = Redis.fromEnv();
 const ID_RE = /^[A-Za-z0-9_-]+$/;
@@ -38,6 +39,18 @@ export default async function handler(req, res) {
     const pending = items.filter((it) => it.kind === "prescription" && it.extract_status === "pending");
     if (pending.length === 0) {
       res.status(200).json({ status: "nothing", updated: 0 });
+      return;
+    }
+
+    // 処方内容を読まない設定のときは、AIを呼ばず、「読み取り中」の印だけ消す
+    if (!rxDetailsEnabled()) {
+      for (const it of pending) {
+        it.extract_status = "skipped";
+        if (await redis.exists(`fax:item:${it.id}`)) {
+          await redis.set(`fax:item:${it.id}`, JSON.stringify(it), it.demo ? { keepTtl: true } : undefined);
+        }
+      }
+      res.status(200).json({ status: "disabled", updated: 0, skipped: pending.length });
       return;
     }
 

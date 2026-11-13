@@ -73,6 +73,15 @@ export default function FaxQueue({ canManage = false }) {
   const [senderEdit, setSenderEdit] = useState(null); // 送信元の修正
   const [regroupRows, setRegroupRows] = useState(null); // ページのまとめ方の修正
   const [ai, setAi] = useState({ ok: true }); // AIの状態(失敗しているときは警告を出す)
+  const [features, setFeatures] = useState({ rx_details: false }); // 処方内容を読む設定か
+  // 閉じた警告は、あたらしい失敗が起きるまで出さない(AIの失敗の時刻で見分ける)
+  const [dismissedAt, setDismissedAt] = useState(() => {
+    try {
+      return localStorage.getItem("ai_warning_dismissed_at") || "";
+    } catch {
+      return ""; // 保存できない環境(プライベートモードなど)
+    }
+  });
   const [bulkProgress, setBulkProgress] = useState(null); // 失敗したFAXをまとめて読み直している間の進み具合
   const [saveError, setSaveError] = useState("");
   const searchTimer = useRef(null);
@@ -101,6 +110,7 @@ export default function FaxQueue({ canManage = false }) {
         const data = await res.json();
         setItems(data.items || []);
         setAi(data.ai || { ok: true });
+        setFeatures(data.features || { rx_details: false });
         setCounts(data.counts || {});
         setToday(data.today);
         setError("");
@@ -335,6 +345,7 @@ export default function FaxQueue({ canManage = false }) {
 
   // 読み取りに失敗したFAXを、順番に読み直す(AIの残高を足したあとなどに使う)
   const failedItems = items.filter((i) => i.analysis_failed && i.fax_id);
+  const showAiFailure = ai.ok === false && ai.at !== dismissedAt; // 閉じた失敗は、あたらしい失敗が起きるまで出さない
   async function rereadAllFailed() {
     const faxIds = [...new Set(failedItems.map((i) => i.fax_id))];
     let failures = 0;
@@ -358,6 +369,26 @@ export default function FaxQueue({ canManage = false }) {
     await load(true);
     setBulkProgress(failures ? `${failures}通は読み直せませんでした。AIの状態を確認してください` : "読み直しました");
     setTimeout(() => setBulkProgress(null), 6000);
+  }
+
+  // 警告を閉じる: 失敗の印を消し、いまのAIの失敗は、あたらしい失敗が起きるまで出さない
+  async function dismissWarning() {
+    if (ai.at) {
+      try {
+        localStorage.setItem("ai_warning_dismissed_at", ai.at);
+      } catch {
+        // 保存できなくても、この画面を開いている間は閉じたままにする
+      }
+      setDismissedAt(ai.at);
+    }
+    if (failedItems.length) {
+      await fetch("/api/fax-dismiss", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: failedItems.map((i) => i.id) }),
+      }).catch(() => {});
+      await load(true);
+    }
   }
 
   async function deleteAll() {
@@ -445,22 +476,27 @@ export default function FaxQueue({ canManage = false }) {
         </div>
       )}
 
-      {(ai.ok === false || failedItems.length > 0) && (
+      {(showAiFailure || failedItems.length > 0) && (
         <div style={styles.aiWarning}>
           <div style={styles.aiWarningTitle}>
-            ⚠ {ai.ok === false ? "AIの読み取りが失敗しています" : `AIの読み取りに失敗したFAXが${failedItems.length}件あります`}
+            ⚠ {showAiFailure ? "AIの読み取りが失敗しています" : `AIの読み取りに失敗したFAXが${failedItems.length}件あります`}
           </div>
-          {ai.ok === false && <div style={styles.aiWarningText}>{ai.message}</div>}
-          {ai.ok === false && ai.code === "no_credit" && (
+          {showAiFailure && <div style={styles.aiWarningText}>{ai.message}</div>}
+          {showAiFailure && ai.code === "no_credit" && (
             <div style={styles.aiWarningText}>
               Anthropicのコンソール(console.anthropic.com)の「Plans &amp; Billing」で、クレジットを追加してください。追加したあと、下のボタンで読み直せます。
             </div>
           )}
-          {failedItems.length > 0 && (
-            <button type="button" style={styles.aiWarningButton} onClick={rereadAllFailed} disabled={!!bulkProgress}>
-              失敗したFAX({[...new Set(failedItems.map((i) => i.fax_id))].length}通)をまとめて読み直す
+          <div style={styles.aiWarningRow}>
+            {failedItems.length > 0 && (
+              <button type="button" style={styles.aiWarningButton} onClick={rereadAllFailed} disabled={!!bulkProgress}>
+                失敗したFAX({[...new Set(failedItems.map((i) => i.fax_id))].length}通)をまとめて読み直す
+              </button>
+            )}
+            <button type="button" style={styles.aiWarningClose} onClick={dismissWarning} aria-label="この警告を閉じる" title="この警告を閉じる">
+              ×
             </button>
-          )}
+          </div>
         </div>
       )}
       {bulkProgress && <p style={styles.bulkProgress}>{bulkProgress}</p>}
@@ -604,7 +640,7 @@ export default function FaxQueue({ canManage = false }) {
               {editing.kind === "prescription" && editing.item.fax_id && (
                 <>
                   <button type="button" style={styles.rereadButton} onClick={() => rereadItem(editing.item)} disabled={rereading}>
-                    {rereading ? "AIが読み取り中…(20〜30秒)" : "🔄 AIで読み取り直す(名前・送信元・処方内容)"}
+                    {rereading ? "AIが読み取り中…(20〜30秒)" : `🔄 AIで読み取り直す(名前・送信元${features.rx_details ? "・処方内容" : ""})`}
                   </button>
                   {rereading && <span style={styles.note}>そのままお待ちください</span>}
                 </>
@@ -673,7 +709,9 @@ export default function FaxQueue({ canManage = false }) {
                     />
                   </label>
                 </div>
-                <RpEditor value={editing.rps} onChange={(rps) => setEditing({ ...editing, rps })} />
+                {(features.rx_details || editing.rps.length > 0) && (
+                  <RpEditor value={editing.rps} onChange={(rps) => setEditing({ ...editing, rps })} />
+                )}
               </>
             )}
 
@@ -960,6 +998,8 @@ const styles = {
   badgeFail: { ...badge, background: "#fef2f2", color: "#b91c1c", fontWeight: 700 },
   aiWarning: { background: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "0.6rem 0.8rem", margin: "0 0 0.6rem 0", display: "flex", flexDirection: "column", gap: "0.35rem" },
   bulkProgress: { fontSize: "0.82rem", color: "#2563eb", margin: "0 0 0.6rem 0", fontWeight: 700 },
+  aiWarningRow: { display: "flex", alignItems: "center", gap: "0.5rem" },
+  aiWarningClose: { width: "2rem", height: "2rem", borderRadius: "6px", border: "1px solid #fca5a5", background: "#fff", color: "#b91c1c", fontSize: "1.1rem", lineHeight: 1, cursor: "pointer" },
   aiWarningTitle: { fontWeight: 700, fontSize: "0.88rem", color: "#b91c1c" },
   aiWarningText: { fontSize: "0.78rem", color: "#7f1d1d", lineHeight: 1.6 },
   aiWarningButton: { alignSelf: "flex-start", padding: "0.45rem 0.8rem", borderRadius: "6px", border: "1px solid #b91c1c", background: "#fff", color: "#b91c1c", fontSize: "0.82rem", cursor: "pointer" },
