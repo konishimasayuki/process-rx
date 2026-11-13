@@ -1,8 +1,11 @@
 import { Redis } from "@upstash/redis";
 
 const redis = Redis.fromEnv();
+const parse = (raw) => (raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : null);
 
-// 薬局PCのアプリが印刷を終えたら呼ぶ。一覧に「印刷済」を出すため。
+// 薬局PCのアプリが印刷を終えたら呼ぶ。一覧に「自動印刷済」「手動印刷済」を出すため。
+//   { id, source: "auto" | "manual" }
+// source が無い(古いアプリ)ときは、画面からの印刷依頼に入っていれば手動、それ以外は自動とみなす
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.status(405).json({ error: "POSTのみ対応しています" });
@@ -18,13 +21,24 @@ export default async function handler(req, res) {
     res.status(400).json({ error: "idが不正です" });
     return;
   }
-  const raw = await redis.get(`fax:item:${id}`);
-  if (!raw) {
+  const record = parse(await redis.get(`fax:item:${id}`));
+  if (!record) {
     res.status(404).json({ error: "見つかりません" });
     return;
   }
-  const record = typeof raw === "string" ? JSON.parse(raw) : raw;
-  record.printed_at = new Date().toISOString();
-  await redis.set(`fax:item:${id}`, JSON.stringify(record));
-  res.status(200).json({ status: "ok" });
+
+  let source = req.body?.source;
+  if (source !== "auto" && source !== "manual") {
+    const command = parse(await redis.get("fax_agent:command"));
+    const manual =
+      command?.type === "print" && ["pending", "running"].includes(command.status) && (command.ids || []).includes(id);
+    source = manual ? "manual" : "auto";
+  }
+
+  const now = new Date().toISOString();
+  record.printed_at = now;
+  if (source === "manual") record.manual_printed_at = now;
+  else record.auto_printed_at = now;
+  await redis.set(`fax:item:${id}`, JSON.stringify(record), record.demo ? { keepTtl: true } : undefined);
+  res.status(200).json({ status: "ok", source });
 }

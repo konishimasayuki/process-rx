@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import zipfile
 import sys
 import time
@@ -28,11 +29,12 @@ from pathlib import Path
 import requests
 
 APP_TITLE = "process-rx FAX取込"
-AGENT_VERSION = "1.4.0"
+AGENT_VERSION = "1.5.0"
 API_BASE = "https://process-rx.vercel.app"
 DEFAULT_FAX_FOLDER = r"\\192.168.11.1\シェアード\fax"
-POLL_INTERVAL_SECONDS = 15
-STABLE_SECONDS = 10  # 書き込み中のファイルを避けるため、最終更新から待つ秒数
+POLL_INTERVAL_SECONDS = 15  # 画面の設定・依頼を確認する間隔
+SCAN_INTERVAL_SECONDS = 2  # FAXフォルダを確認する間隔(早く印刷するため短く)
+STABLE_SECONDS = 10  # PDFの最後まで書けたか分からないときは、最終更新からこの秒数待つ
 MAX_UPLOAD_BYTES = 3_000_000  # これを超えるPDFはクラウドに送れない
 MAX_ATTEMPTS = 5  # 壊れたPDFなどで失敗し続けた場合の上限
 INSTALL_DIR = Path(r"C:\process-rx")
@@ -352,16 +354,33 @@ def report_command(config: dict, command_id: str, status: str, progress=None, re
         pass  # 画面の進み具合表示用なので、失敗しても取込自体は続ける
 
 
-def report_printed(item_id: str, config: dict) -> None:
+def report_printed(item_id: str, config: dict, source: str = "auto") -> None:
     try:
         requests.post(
             f"{config['api_base']}/api/fax-printed",
-            json={"id": item_id},
+            json={"id": item_id, "source": source},
             headers={"x-fax-secret": config["secret"]},
             timeout=20,
         )
     except requests.RequestException:
         pass  # 一覧の「印刷済」表示用なので失敗しても印刷には影響しない
+
+
+def request_extract_later(fax_id: str, config: dict) -> None:
+    """印刷を急ぐため後回しにした「処方内容の詳しい読み取り」を、裏で(待たずに)サーバーに頼む"""
+
+    def run():
+        try:
+            requests.post(
+                f"{config['api_base']}/api/fax-extract",
+                json={"fax_id": fax_id},
+                headers={"x-fax-secret": config["secret"]},
+                timeout=90,
+            )
+        except requests.RequestException:
+            pass  # 失敗しても、画面を開いたときに読み直される
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 # ---------- 取込 ----------
@@ -431,7 +450,8 @@ def process_file(pdf_path: Path, config: dict, settings: dict, state: dict, size
     # 何回目の送信かをサーバーに伝える(読み取りに何度も失敗したFAXは、サーバー側で要確認として取り込む)
     attempt = state["attempts"].get(pdf_path.name, 0) + 1
     logger.info("新しいFAX: %s%s", pdf_path.name, f"(再送{attempt}回目)" if attempt > 1 else "")
-    res = upload(pdf_path, config, {"attempt": attempt})
+    sent_at = time.time()
+    res = upload(pdf_path, config, {"attempt": attempt, "defer_extract": True})
 
     if res.status_code == 401:
         logger.error("合言葉が違います。config.json の secret とVercelの設定を確認してください")
@@ -476,15 +496,23 @@ def process_file(pdf_path: Path, config: dict, settings: dict, state: dict, size
             state["printed"].add(item["id"])
             printed_count += 1
             save_state(state)
-            report_printed(item["id"], config)
+            report_printed(item["id"], config, "auto")
 
     names = "、".join(safe_name(item_label(i)) for i in items)
+    try:
+        arrived = pdf_path.stat().st_mtime
+    except OSError:
+        arrived = sent_at
     logger.info(
-        "完了: %d件に分けて合体 / %d件印刷  %s",
+        "完了: %d件に分けて合体 / %d件印刷  %s(FAX到着から約%d秒・うちサーバー処理約%d秒)",
         len(items),
         printed_count,
         names,
+        max(0, time.time() - arrived),
+        (data.get("timings") or {}).get("total_ms", 0) / 1000,
     )
+    if data.get("extract_pending") and data.get("fax_id"):
+        request_extract_later(data["fax_id"], config)
     state["attempts"].pop(pdf_path.name, None)
     return True
 
@@ -524,6 +552,28 @@ def seed_folder(folder: str, pdfs, state: dict) -> None:
     logger.info("このフォルダに今あるFAX %d件は取り込まず、これから届くFAXを取り込みます", len(pdfs))
 
 
+_seen_sizes = {}  # ファイル名 → 前回見たときの大きさ
+
+
+def pdf_complete(path: Path, size: int) -> bool:
+    """PDFの終わりの印(%%EOF)まで書き込まれているか"""
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, size - 2048))
+            return b"%%EOF" in f.read()
+    except OSError:
+        return False
+
+
+def is_ready(name: str, path: Path, mtime: float, size: int, now: float) -> bool:
+    """書き込みが終わったか。最後まで書けていて大きさが変わっていなければすぐ、分からなければ少し待つ"""
+    prev = _seen_sizes.get(name)
+    _seen_sizes[name] = size
+    if now - mtime >= STABLE_SECONDS:
+        return True
+    return prev is not None and prev == size and size > 0 and pdf_complete(path, size)
+
+
 def run_once(config: dict, settings: dict, state: dict) -> None:
     folder = settings["fax_folder"]
     try:
@@ -547,7 +597,7 @@ def run_once(config: dict, settings: dict, state: dict) -> None:
     for name, pdf_path, mtime, size in pdfs:
         if name in state["files"]:
             continue
-        if now - mtime < STABLE_SECONDS:
+        if not is_ready(name, pdf_path, mtime, size, now):
             continue  # まだ書き込み中かもしれない
         try:
             done = process_file(pdf_path, config, settings, state, size)
@@ -590,7 +640,7 @@ def handle_print_command(command: dict, config: dict, settings: dict, state: dic
         if print_pdf(path, settings):
             result["printed"] += 1
             state["printed"].add(item_id)
-            report_printed(item_id, config)
+            report_printed(item_id, config, "manual")
         else:
             result["failed"] += 1
         try:
@@ -702,15 +752,20 @@ def main() -> None:
     state = load_state() or {"files": set(), "printed": set(), "attempts": {}, "folder": None}
     logger.info("起動しました(ver %s)。※この画面は閉じないでください(最小化はOK)", AGENT_VERSION)
 
+    settings, command = fetch_server(config)
+    last_sync = time.time()
     while True:
         try:
-            settings, command = fetch_server(config)
+            if time.time() - last_sync >= POLL_INTERVAL_SECONDS:
+                settings, command = fetch_server(config)
+                last_sync = time.time()
             run_once(config, settings, state)
             if command:
                 handle_command(command, config, settings, state)
+                command = None
         except Exception as err:  # noqa: BLE001 常駐を止めないため
             logger.exception("予期しないエラー: %s", err)
-        time.sleep(POLL_INTERVAL_SECONDS)
+        time.sleep(SCAN_INTERVAL_SECONDS)
 
 
 if __name__ == "__main__":

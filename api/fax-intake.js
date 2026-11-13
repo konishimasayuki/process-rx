@@ -5,6 +5,7 @@ import { buildItemPdf, normalizeGroups, sheetCount } from "./_pdf-utils.js";
 import { analyzePages } from "./_pdf-render.js";
 import { jstDate, pickSender } from "./_fax-utils.js";
 import { basicExtracted, classifyPages, extractGroup, fillFromBasic, groupPages } from "./_fax-ai.js";
+import { saveSummary, summaryOf } from "./_fax-store.js";
 
 const redis = Redis.fromEnv();
 
@@ -51,6 +52,9 @@ export default async function handler(req, res) {
 
   const { filename, pdf_base64, imported, original_time } = req.body || {};
   const attempt = Number(req.body?.attempt) || 1;
+  // true: 処方内容の詳しい読み取りは後回しにして、印刷用のPDFを早く返す(印刷アプリが後で /api/fax-extract を呼ぶ)
+  const deferExtract = req.body?.defer_extract === true;
+  const timings = {};
   if (!filename || !pdf_base64) {
     res.status(400).json({ error: "filename と pdf_base64 は必須です" });
     return;
@@ -64,7 +68,7 @@ export default async function handler(req, res) {
     // 取込済み。印刷アプリが途中で止まった場合に備えて、前回の結果を返す
     const prev = await redis.get(`fax:hash_items:${contentHash}`);
     const items = prev ? (typeof prev === "string" ? JSON.parse(prev) : prev) : [];
-    res.status(200).json({ status: "duplicate", filename, items, ids: items.map((x) => x.id) });
+    res.status(200).json({ status: "duplicate", filename, fax_id: contentHash, items, ids: items.map((x) => x.id) });
     return;
   }
 
@@ -82,6 +86,7 @@ export default async function handler(req, res) {
     detectCrops(pdfBuffer, pageCount),
     classifyPages(pdf_base64, pageCount, Math.min(35_000, remaining())).catch((err) => ({ error: err })),
   ]);
+  timings.classify_ms = Date.now() - started;
 
   let rawGroups = null;
   let rawSender = null;
@@ -103,6 +108,12 @@ export default async function handler(req, res) {
     await Promise.all(
       grouped.map(async (g) => {
         if (g.kind !== "prescription") return;
+        if (deferExtract) {
+          // 印刷を急ぐ: 1段階目で読めた名前などだけ入れておき、詳しい読み取りは後で
+          g.extracted = basicExtracted(g);
+          g.extractPending = true;
+          return;
+        }
         try {
           const detail = await extractGroup(srcDoc, g, remaining() - 3000);
           g.extracted = fillFromBasic(detail, g);
@@ -113,29 +124,32 @@ export default async function handler(req, res) {
         }
       })
     );
+    timings.extract_ms = Date.now() - started - timings.classify_ms;
     rawGroups = grouped.map((g) => ({
       pages: g.pages,
       kind: g.kind,
       extracted: g.extracted || null,
       needs_review: !!g.needs_review,
+      extract_pending: !!g.extractPending,
     }));
     grouped.forEach((g) => Object.assign(turns, g.turns || {}));
   }
 
-  const groups = normalizeGroups(rawGroups, pageCount).map((g, i) => ({
-    ...g,
-    needs_review:
-      g.needs_review ||
-      (rawGroups && rawGroups.find((r) => r.pages[0] === g.pages[0])?.needs_review) ||
-      false,
-  }));
+  const groups = normalizeGroups(rawGroups, pageCount).map((g) => {
+    const raw = rawGroups && rawGroups.find((r) => r.pages[0] === g.pages[0]);
+    return {
+      ...g,
+      needs_review: g.needs_review || raw?.needs_review || false,
+      extract_pending: !!raw?.extract_pending,
+    };
+  });
   const sender = pickSender(rawSender, groups);
   const dateKey = `fax:date:${jstDate()}`;
 
   // 3) グループごとに、並べたPDFを作って保存
   const receivedAt = new Date().toISOString();
   const createdIds = [];
-  const summaryItems = [];
+  const savedRecords = [];
 
   for (let i = 0; i < groups.length; i++) {
     const g = groups[i];
@@ -179,8 +193,12 @@ export default async function handler(req, res) {
       kind: g.kind,
       is_prescription: g.is_prescription,
       auto_print: g.kind !== "ad", // 広告以外は自動で印刷する
+      // 詳しい読み取りが後回しのときは、終わるまで「要確認」にしない
       needs_review:
-        g.kind === "prescription" && (g.needs_review || !g.extracted || !g.extracted.patient_name),
+        g.kind === "prescription" &&
+        !g.extract_pending &&
+        (g.needs_review || !g.extracted || !g.extracted.patient_name),
+      extract_status: g.kind === "prescription" ? (g.extract_pending ? "pending" : "done") : undefined,
       crops: groupCrops,
       turns: groupTurns,
       layout,
@@ -195,15 +213,7 @@ export default async function handler(req, res) {
       await redis.rpush(dateKey, id);
     }
     createdIds.push(id);
-    summaryItems.push({
-      id,
-      pages: g.pages,
-      patient_name: g.extracted?.patient_name || null,
-      is_prescription: g.is_prescription,
-      kind: g.kind,
-      auto_print: g.kind !== "ad",
-      has_pdf: hasPdf,
-    });
+    savedRecords.push(record);
   }
 
   // 元のPDFは、拡大率の調整などで作り直すために保存しておく
@@ -211,17 +221,19 @@ export default async function handler(req, res) {
     await redis.set(`fax:src:${contentHash}`, pdf_base64, { ex: PDF_TTL_SECONDS });
   }
 
-  await redis.set(`fax:hash_items:${contentHash}`, JSON.stringify(summaryItems), {
-    ex: PDF_TTL_SECONDS,
-  });
+  await saveSummary(redis, contentHash, savedRecords);
   await redis.sadd("fax:processed_hashes", contentHash);
   await redis.sadd("fax:processed_filenames", filename);
 
+  timings.total_ms = Date.now() - started;
   res.status(200).json({
     status: "ok",
+    fax_id: contentHash,
     pages: pageCount,
     groups: groups.map((g) => g.pages),
     ids: createdIds,
-    items: summaryItems,
+    items: summaryOf(savedRecords),
+    extract_pending: savedRecords.some((r) => r.extract_status === "pending"),
+    timings,
   });
 }

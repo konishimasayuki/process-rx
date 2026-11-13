@@ -128,6 +128,35 @@ export default function FaxQueue({ canManage = false }) {
   }
 
   const faxes = useMemo(() => groupByFax(items), [items]);
+
+  // 詳しい読み取りが90秒以上「読み取り中」のままのFAXは、画面からも読み取りを頼む(1回だけ)
+  const extractAsked = useRef(new Set());
+  useEffect(() => {
+    const stale = [
+      ...new Set(
+        items
+          .filter(
+            (i) =>
+              i.extract_status === "pending" &&
+              i.fax_id &&
+              Date.now() - new Date(i.received_at).getTime() > 90_000 &&
+              !extractAsked.current.has(i.fax_id)
+          )
+          .map((i) => i.fax_id)
+      ),
+    ];
+    stale.forEach((faxId) => {
+      extractAsked.current.add(faxId);
+      fetch("/api/fax-extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fax_id: faxId }),
+      })
+        .then(() => load(true))
+        .catch(() => {});
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
   const hasDemo = items.some((i) => i.demo);
   const selected = date || today;
   const last7 = Object.keys(counts);
@@ -424,12 +453,15 @@ export default function FaxQueue({ canManage = false }) {
                       <span style={styles.badgeOrange}>要確認</span>
                     )}
                     {kindOf(item) === "ad" && <span style={styles.badgeAd}>広告</span>}
-                    {!item.imported &&
-                      (item.printed_at ? (
-                        <span style={styles.badgeGreen}>印刷済</span>
-                      ) : autoPrintOf(item) ? (
-                        <span style={styles.badgeGray}>未印刷</span>
-                      ) : null)}
+                    {item.extract_status === "pending" && <span style={styles.badgeReading}>読み取り中</span>}
+                    {!item.imported && item.auto_printed_at && <span style={styles.badgeGreen}>自動印刷済</span>}
+                    {item.manual_printed_at && <span style={styles.badgeManual}>手動印刷済</span>}
+                    {!item.imported && item.printed_at && !item.auto_printed_at && !item.manual_printed_at && (
+                      <span style={styles.badgeGreen}>印刷済</span>
+                    )}
+                    {!item.imported && !item.printed_at && autoPrintOf(item) && (
+                      <span style={styles.badgeGray}>未印刷</span>
+                    )}
                   </span>
                 </button>
               ))}
@@ -819,6 +851,8 @@ const styles = {
   badgeDemo: { ...badge, background: "#fef3c7", color: "#92400e" },
   badgeImport: { ...badge, background: "#e0e7ff", color: "#3730a3" },
   badgeAd: { ...badge, background: "#fef3c7", color: "#92400e" },
+  badgeManual: { ...badge, background: "#e0f2fe", color: "#0369a1" },
+  badgeReading: { ...badge, background: "#f1f5f9", color: "#475569" },
   regroupButton: {
     width: "100%",
     padding: "0.5rem",

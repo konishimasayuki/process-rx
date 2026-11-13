@@ -23,6 +23,9 @@
     },
     "api/fax-regroup.js": {
       "maxDuration": 60
+    },
+    "api/fax-extract.js": {
+      "maxDuration": 60
     }
   }
 }

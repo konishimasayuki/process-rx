@@ -4,34 +4,12 @@ import { getSession } from "./_session.js";
 import { buildItemPdf, sheetCount } from "./_pdf-utils.js";
 import { extractGroup, fillFromBasic } from "./_fax-ai.js";
 import { jstDate } from "./_fax-utils.js";
+import { loadFaxItems, parse, saveSummary } from "./_fax-store.js";
 
 const redis = Redis.fromEnv();
 const TTL = 60 * 60 * 24 * 60;
 const MAX_STORED_PDF_BASE64 = 9_000_000;
 const ID_RE = /^[A-Za-z0-9_-]+$/;
-const CHUNK = 100;
-
-const parse = (raw) => (raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : null);
-
-// 1通のFAXの患者さんごとの記録を、ページ順に読み込む
-async function loadFaxItems(faxId) {
-  const summary = parse(await redis.get(`fax:hash_items:${faxId}`));
-  let items = [];
-  if (Array.isArray(summary) && summary.length) {
-    items = (await redis.mget(...summary.map((x) => `fax:item:${x.id}`))).map(parse).filter(Boolean);
-  }
-  if (items.length === 0) {
-    // 記録の一覧が無いとき(古いデータ)は、受信一覧全体から探す
-    const ids = await redis.lrange("fax:queue", 0, -1);
-    for (let i = 0; i < ids.length; i += CHUNK) {
-      const raw = await redis.mget(...ids.slice(i, i + CHUNK).map((id) => `fax:item:${id}`));
-      raw.map(parse).filter(Boolean).forEach((it) => items.push(it));
-    }
-  }
-  return items
-    .filter((it) => it.fax_id === faxId && Array.isArray(it.source_pages) && it.source_pages.length)
-    .sort((a, b) => a.source_pages[0] - b.source_pages[0]);
-}
 
 const pick = (obj, keys) => Object.fromEntries(keys.filter((k) => obj?.[String(k)]).map((k) => [String(k), obj[String(k)]]));
 
@@ -49,7 +27,7 @@ export default async function handler(req, res) {
   const { fax_id: faxId, groups } = req.body || {};
   if (!faxId || !ID_RE.test(String(faxId))) return res.status(400).json({ error: "fax_idが不正です" });
 
-  const items = await loadFaxItems(faxId);
+  const items = await loadFaxItems(redis, faxId);
   if (items.length === 0) return res.status(404).json({ error: "このFAXが見つかりません" });
 
   // --- 入力の確認: 全ページをちょうど1回ずつ、ページ順の連続したまとまりで ---
@@ -160,6 +138,7 @@ export default async function handler(req, res) {
       has_pdf: hasPdf,
       extracted,
       printed_at: null, // まとめ直したものは未印刷(必要なら画面から印刷)
+      extract_status: p.kind === "prescription" ? "done" : undefined,
       regrouped_at: now,
       regrouped_by: session.name,
       pdf_updated_at: now,
@@ -187,21 +166,7 @@ export default async function handler(req, res) {
       await redis.rpush(`fax:date:${jstDate(new Date(r.received_at))}`, r.id);
     }
   }
-  await redis.set(
-    `fax:hash_items:${faxId}`,
-    JSON.stringify(
-      records.map((r) => ({
-        id: r.id,
-        pages: r.source_pages,
-        patient_name: r.extracted?.patient_name || null,
-        is_prescription: r.is_prescription,
-        kind: r.kind,
-        auto_print: r.auto_print,
-        has_pdf: r.has_pdf,
-      }))
-    ),
-    { ex: TTL }
-  );
+  await saveSummary(redis, faxId, records);
 
   res.status(200).json({
     status: "ok",
