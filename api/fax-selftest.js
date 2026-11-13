@@ -24,7 +24,7 @@ export default async function handler(req, res) {
         await callClaude({
           system: "返事は ok の2文字だけ。",
           content: [{ type: "text", text: "接続確認です。ok と返してください。{ }" }],
-          maxTokens: 20,
+          maxTokens: 400,
           timeoutMs: 15_000,
           model,
         }).catch((err) => {

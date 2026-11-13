@@ -48,7 +48,7 @@ async function askForPages(doc, pageNumbers, timeoutMs) {
   const result = await callClaude({
     system: SYSTEM,
     content,
-    maxTokens: 200 + pageNumbers.length * 40,
+    maxTokens: 3_000 + pageNumbers.length * 100, // 考える分も含めた上限(使った分しか料金はかからない)
     timeoutMs,
     model: ORIENT_MODEL,
   });

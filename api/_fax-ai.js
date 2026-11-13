@@ -36,9 +36,21 @@ export function isRetryable(err) {
   return ["timeout", "rate_limit", "overloaded", "parse"].includes(describeAiError(err).code);
 }
 
-// content を渡すと、その内容をそのまま送る(画像など)。渡さなければ、PDF + text を送る
-// model を渡すと、そのモデルで呼ぶ(向きの判定は小さく安いモデルを使う)
-export async function callClaude({ system, pdfBase64, text, content, maxTokens, timeoutMs, model }) {
+// ---- モデルごとの「考える量」の指定 ----
+// Claude 5.5系は、何も指定しないと答える前に長く考える(Sonnetは初期値が重い)。
+// 考えた分も返事の長さの上限に含まれ、出力の料金もかかる。FAXの読み取りに長い思考は要らないので、軽くする。
+//   Sonnet 5.5: 思考を止める指定(disabled)は使えない → between_tools(前もって考えない) + effort low
+//   Haiku 5.5 : thinking を無効にでき、effort は low
+// effort は AI_EFFORT で変えられる(low / medium / high)
+function modelOptions(model) {
+  const effort = process.env.AI_EFFORT || "low";
+  if (/haiku-5-5/.test(model)) return { thinking: { type: "disabled" }, output_config: { effort } };
+  if (/sonnet-5-5/.test(model)) return { thinking: { type: "between_tools" }, output_config: { effort } };
+  return {};
+}
+
+// 1回分の送信。extra は thinking / output_config など、モデルごとの追加の指定
+async function callOnce({ system, pdfBase64, text, content, maxTokens, timeoutMs, model, extra }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(1000, timeoutMs));
   let response;
@@ -52,8 +64,9 @@ export async function callClaude({ system, pdfBase64, text, content, maxTokens, 
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: model || MODEL,
+        model,
         max_tokens: maxTokens,
+        ...extra,
         system,
         messages: [
           {
@@ -98,6 +111,40 @@ export async function callClaude({ system, pdfBase64, text, content, maxTokens, 
     throw new AiError(`JSONを読めません: ${err.message}`, "parse");
   }
 }
+
+// content を渡すと、その内容をそのまま送る(画像など)。渡さなければ、PDF + text を送る
+// model を渡すと、そのモデルで呼ぶ(向きの判定は小さく安いモデルを使う)
+// 次の場合は、自動でやり直す(合計の制限時間 timeoutMs の範囲で):
+//   - 「考える量」の指定をAIが受け付けなかったとき → 指定なしで
+//   - 返事が長すぎて切れたとき → 上限を3倍にして
+export async function callClaude(opts) {
+  const model = opts.model || MODEL;
+  const deadline = Date.now() + Math.max(1000, opts.timeoutMs);
+  let extra = modelOptions(model);
+  let maxTokens = opts.maxTokens;
+  let truncatedRetried = false;
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await callOnce({ ...opts, model, extra, maxTokens, timeoutMs: deadline - Date.now() });
+    } catch (err) {
+      const msg = String(err?.apiMessage || "").toLowerCase();
+      const timeLeft = deadline - Date.now() > 4000;
+      if (err?.status === 400 && Object.keys(extra).length && /thinking|effort|output_config/.test(msg) && timeLeft) {
+        console.error("thinking/effort rejected, retry without:", msg.slice(0, 120));
+        extra = {};
+        continue;
+      }
+      if (err?.kind === "truncated" && !truncatedRetried && timeLeft) {
+        truncatedRetried = true;
+        maxTokens = Math.min(32_000, maxTokens * 3);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new AiError("AIの呼び出しをやり直せませんでした", "api");
+}
+
 
 // ---------- 1段階目: ページごとに、区分と患者さんの本人情報だけを短く読む ----------
 
@@ -147,7 +194,8 @@ export async function classifyPages(pdfBase64, pageCount, timeoutMs) {
     system: CLASSIFY_PROMPT,
     pdfBase64,
     text: `このPDFは全${pageCount}ページです。ページごとに読み取ってください。`,
-    maxTokens: Math.min(8000, 600 + pageCount * 250),
+    // 上限が低いと、考えただけで使い切って答えが切れる。上限を上げても、使った分しか料金はかからない
+    maxTokens: Math.min(16_000, 4_000 + pageCount * 300),
     timeoutMs,
   });
   return {
@@ -305,7 +353,7 @@ export async function extractGroup(srcDoc, group, timeoutMs) {
     system: EXTRACT_PROMPT,
     pdfBase64,
     text: `この患者さんの処方箋(全${group.pages.length}ページ)を読み取ってください。`,
-    maxTokens: 4000,
+    maxTokens: 8_000,
     timeoutMs,
   });
 }
