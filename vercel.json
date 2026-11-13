@@ -20,6 +20,9 @@
     "api/fax-selftest.js": {
       "maxDuration": 30,
       "includeFiles": "node_modules/@napi-rs/**"
+    },
+    "api/fax-regroup.js": {
+      "maxDuration": 60
     }
   }
 }

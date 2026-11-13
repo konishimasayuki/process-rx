@@ -34,11 +34,12 @@ export async function openPdf(buffer) {
   return task.promise;
 }
 
-// 指定ページを、横幅 width(px)の画像(canvas)にして返す
-export async function renderPage(doc, pageNumber, width) {
+// 指定ページを、横幅 width(px)の画像(canvas)にして返す。turn: さらに時計回りに回す角度
+export async function renderPage(doc, pageNumber, width, turn = 0) {
   const page = await doc.getPage(pageNumber);
-  const base = page.getViewport({ scale: 1 });
-  const viewport = page.getViewport({ scale: width / base.width });
+  const rotation = (((page.rotate + (Number(turn) || 0)) % 360) + 360) % 360;
+  const base = page.getViewport({ scale: 1, rotation });
+  const viewport = page.getViewport({ scale: width / base.width, rotation });
   const w = Math.max(1, Math.ceil(viewport.width));
   const h = Math.max(1, Math.ceil(viewport.height));
   const { canvas, context } = doc.canvasFactory.create(w, h);
@@ -190,11 +191,11 @@ export async function analyzePages(buffer, { width = 800 } = {}) {
 }
 
 // 指定ページを横幅 width(px) のPNG画像にする(プレビュー用)
-export async function renderPagePng(buffer, pageNumber, width) {
+export async function renderPagePng(buffer, pageNumber, width, turn = 0) {
   const doc = await openPdf(buffer);
   try {
     if (pageNumber < 1 || pageNumber > doc.numPages) return { png: null, pageCount: doc.numPages };
-    const { canvas } = await renderPage(doc, pageNumber, width);
+    const { canvas } = await renderPage(doc, pageNumber, width, turn);
     return { png: canvas.toBuffer("image/png"), pageCount: doc.numPages };
   } finally {
     await doc.destroy();

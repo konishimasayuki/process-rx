@@ -3,6 +3,7 @@ import Modal from "./Modal.jsx";
 import FaxPreviewPanel from "./FaxPreviewPanel.jsx";
 import FaxPrintButton from "./FaxPrintButton.jsx";
 import RpEditor, { toRps } from "./RpEditor.jsx";
+import FaxRegroup from "./FaxRegroup.jsx";
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 
@@ -69,6 +70,7 @@ export default function FaxQueue({ canManage = false }) {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(null); // 患者さんの修正
   const [senderEdit, setSenderEdit] = useState(null); // 送信元の修正
+  const [regroupRows, setRegroupRows] = useState(null); // ページのまとめ方の修正
   const [saveError, setSaveError] = useState("");
   const searchTimer = useRef(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -431,6 +433,11 @@ export default function FaxQueue({ canManage = false }) {
                   </span>
                 </button>
               ))}
+              {first.fax_id && rows.reduce((n, r) => n + (r.source_pages?.length || 0), 0) > 1 && (
+                <button type="button" style={styles.regroupButton} onClick={() => setRegroupRows(rows)}>
+                  ⇅ ページを分ける・まとめる
+                </button>
+              )}
             </section>
           );
         })
@@ -573,6 +580,19 @@ export default function FaxQueue({ canManage = false }) {
               )}
             </div>
           </form>
+        </Modal>
+      )}
+
+      {regroupRows && (
+        <Modal title="ページのまとめ方" onClose={() => setRegroupRows(null)}>
+          <FaxRegroup
+            rows={regroupRows}
+            onCancel={() => setRegroupRows(null)}
+            onDone={() => {
+              setRegroupRows(null);
+              load(true);
+            }}
+          />
         </Modal>
       )}
 
@@ -799,6 +819,15 @@ const styles = {
   badgeDemo: { ...badge, background: "#fef3c7", color: "#92400e" },
   badgeImport: { ...badge, background: "#e0e7ff", color: "#3730a3" },
   badgeAd: { ...badge, background: "#fef3c7", color: "#92400e" },
+  regroupButton: {
+    width: "100%",
+    padding: "0.5rem",
+    border: "none",
+    background: "#fafafa",
+    color: "#2563eb",
+    fontSize: "0.8rem",
+    cursor: "pointer",
+  },
   pdfButtons: { display: "flex", flexDirection: "column", gap: "0.5rem" },
   twoCols: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" },
   dangerSub: {
