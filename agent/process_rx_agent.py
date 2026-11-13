@@ -28,7 +28,7 @@ from pathlib import Path
 import requests
 
 APP_TITLE = "process-rx FAX取込"
-AGENT_VERSION = "1.1.0"
+AGENT_VERSION = "1.1.1"
 API_BASE = "https://process-rx.vercel.app"
 DEFAULT_FAX_FOLDER = r"\\192.168.11.1\シェアード\fax"
 POLL_INTERVAL_SECONDS = 15
@@ -368,9 +368,8 @@ def download_pdf(item_id: str, config: dict):
     return res.content
 
 
-def process_file(pdf_path: Path, config: dict, settings: dict, state: dict) -> bool:
+def process_file(pdf_path: Path, config: dict, settings: dict, state: dict, size: int) -> bool:
     """True: 取込完了(次回以降は無視) / False: 次回また試す"""
-    size = pdf_path.stat().st_size
     if size > MAX_UPLOAD_BYTES:
         logger.error(
             "大きすぎて取り込めません(%.1fMB): %s ※手動で印刷してください",
@@ -438,42 +437,74 @@ def process_file(pdf_path: Path, config: dict, settings: dict, state: dict) -> b
     return True
 
 
-def seed_folder(folder: Path, state: dict) -> None:
-    existing = [p.name for p in folder.glob("*.pdf")]
-    state["files"].update(existing)
-    state["folder"] = str(folder)
+def list_pdfs(folder: str):
+    """FAXフォルダ内のPDFを (ファイル名, パス, 更新時刻, サイズ) で返す(古い順)。
+
+    NAS(共有フォルダ)では Path.exists() / stat() が WinError 122 で失敗することがあるため、
+    フォルダ自体には stat を使わず、一覧取得(scandir)だけで確認する。
+    更新時刻・サイズも一覧と一緒に取れる値を使う。"""
+    result = []
+    with os.scandir(folder) as entries:
+        for entry in entries:
+            if entry.name.lower().endswith(".pdf") and entry.is_file():
+                info = entry.stat()
+                result.append((entry.name, Path(entry.path), info.st_mtime, info.st_size))
+    return sorted(result, key=lambda item: item[2])
+
+
+_last_folder_error = {"text": "", "at": 0.0}
+
+
+def report_folder_error(folder: str, err: Exception) -> None:
+    """フォルダを開けないときの記録。同じ内容は10分に1回だけ出す(15秒ごとの連続表示を防ぐ)"""
+    text = f"{type(err).__name__}: {err}"
+    now = time.time()
+    if text != _last_folder_error["text"] or now - _last_folder_error["at"] > 600:
+        logger.warning("FAXフォルダを開けません: %s ／ %s", folder, text)
+        logger.warning("→ エクスプローラーで同じ場所が開けるか、パスや認証情報を確認してください")
+        _last_folder_error.update(text=text, at=now)
+
+
+def seed_folder(folder: str, pdfs, state: dict) -> None:
+    state["files"].update(name for name, _, _, _ in pdfs)
+    state["folder"] = folder
     save_state(state)
-    logger.info("このフォルダに今あるFAX %d件は取り込まず、これから届くFAXを取り込みます", len(existing))
+    logger.info("このフォルダに今あるFAX %d件は取り込まず、これから届くFAXを取り込みます", len(pdfs))
 
 
 def run_once(config: dict, settings: dict, state: dict) -> None:
-    folder = Path(settings["fax_folder"])
-    if not folder.exists():
-        logger.warning("FAXフォルダにアクセスできません: %s", folder)
+    folder = settings["fax_folder"]
+    try:
+        pdfs = list_pdfs(folder)
+    except OSError as err:
+        report_folder_error(folder, err)
         return
+    _last_folder_error["text"] = ""
 
     # 初回、または設定画面でフォルダが変わったときは、今あるファイルを取り込まない
-    if state.get("folder") != str(folder):
-        seed_folder(folder, state)
+    if state.get("folder") != folder:
+        seed_folder(folder, pdfs, state)
         return
 
     if settings.get("auto_print"):
         ensure_sumatra()
 
     now = time.time()
-    pdfs = sorted(folder.glob("*.pdf"), key=lambda p: p.stat().st_mtime)
-    for pdf_path in pdfs:
-        if pdf_path.name in state["files"]:
+    for name, pdf_path, mtime, size in pdfs:
+        if name in state["files"]:
             continue
-        if now - pdf_path.stat().st_mtime < STABLE_SECONDS:
+        if now - mtime < STABLE_SECONDS:
             continue  # まだ書き込み中かもしれない
         try:
-            done = process_file(pdf_path, config, settings, state)
+            done = process_file(pdf_path, config, settings, state, size)
         except requests.RequestException as err:
             logger.error("通信エラー: %s(あとで再試行します)", err)
             done = False
+        except OSError as err:
+            logger.error("ファイルを読み込めません(%s): %s", name, err)
+            done = False
         if done:
-            state["files"].add(pdf_path.name)
+            state["files"].add(name)
             save_state(state)
 
 
