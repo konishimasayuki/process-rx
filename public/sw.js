@@ -23,8 +23,8 @@ self.addEventListener("push", (event) => {
       }
       await self.registration.showNotification(data.title || "process-rx", {
         body: data.body || "",
-        icon: "/icons/icon-192.png",
-        badge: "/icons/icon-192.png",
+        icon: "/icons/icon-192.png?v=2",
+        badge: "/icons/badge-96.png", // 上の欄に出る小さな単色マーク
         tag: data.tag || "process-rx",
         renotify: true,
         data: { url: data.url || "/" },
