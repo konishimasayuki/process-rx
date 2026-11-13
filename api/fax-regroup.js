@@ -23,7 +23,8 @@ export default async function handler(req, res) {
   const session = await getSession(req);
   if (!session) return res.status(401).json({ error: "ログインが必要です" });
 
-  const { fax_id: faxId, groups } = req.body || {};
+  // reread: true … まとめ方は変えず、AIで読み直す(名前・送信元・処方内容)。only に記録のIDを渡すと、その1件だけ
+  const { fax_id: faxId, groups, reread, only } = req.body || {};
   if (!faxId || !ID_RE.test(String(faxId))) return res.status(400).json({ error: "fax_idが不正です" });
 
   const items = await loadFaxItems(redis, faxId);
@@ -65,7 +66,11 @@ export default async function handler(req, res) {
   const plan = groups.map((g) => {
     const pages = g.map(Number);
     const same = byKey.get(pages.join(","));
-    if (same) return { pages, item: same, changed: false };
+    // 読み直しのときは、まとめ方が同じでも(対象のものは)作り直す
+    if (same && !(reread === true && (!only || only === same.id) && (same.kind || "prescription") === "prescription")) {
+      return { pages, item: same, changed: false };
+    }
+    if (same) return { pages, base: same, kind: "prescription", inherit: true, changed: true, reread: true };
     const covering = [...new Set(pages.map((n) => itemOfPage.get(n)))];
     const kinds = covering.map((it) => it.kind || (it.is_prescription ? "prescription" : "cover"));
     const kind = kinds.includes("prescription") ? "prescription" : kinds.every((k) => k === "ad") ? "ad" : "cover";
@@ -136,13 +141,21 @@ export default async function handler(req, res) {
       layout,
       has_pdf: hasPdf,
       extracted,
-      printed_at: null, // まとめ直したものは未印刷(必要なら画面から印刷)
+      // まとめ直したものは未印刷に戻す(必要なら画面から印刷)。読み直しだけのときは、印刷の記録をそのまま残す
+      printed_at: p.reread ? p.base.printed_at ?? null : null,
+      auto_printed_at: p.reread ? p.base.auto_printed_at : undefined,
+      manual_printed_at: p.reread ? p.base.manual_printed_at : undefined,
       extract_status: p.kind === "prescription" ? "done" : undefined,
       regrouped_at: now,
       regrouped_by: session.name,
       pdf_updated_at: now,
     });
   }
+
+  // 送信元が不明のFAXは、読み取れた医療機関名から補う
+  const knownSender =
+    records.find((r) => r.sender)?.sender || records.map((r) => r.extracted?.issuing_institution).find(Boolean) || null;
+  if (knownSender) records.forEach((r) => (r.sender = r.sender || knownSender));
 
   records.forEach((r, i) => {
     r.group_index = i + 1;

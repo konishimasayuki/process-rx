@@ -6,6 +6,7 @@ import { analyzePages } from "./_pdf-render.js";
 import { SAFETY_TTL_SECONDS as PDF_TTL_SECONDS, jstDate, pickSender } from "./_fax-utils.js";
 import { basicExtracted, classifyPages, extractGroup, fillFromBasic, groupPages } from "./_fax-ai.js";
 import { saveSummary, summaryOf } from "./_fax-store.js";
+import { detectOrientations } from "./_fax-orient.js";
 import { notifyFax } from "./_push.js";
 
 const redis = Redis.fromEnv();
@@ -82,9 +83,11 @@ export default async function handler(req, res) {
   const pageCount = srcDoc.getPageCount();
 
   // 1) ページごとの区分と本人情報(氏名・フリガナ・生年月日・保険者番号など)を読む。余白の検出も同時に進める
-  const [crops, classified] = await Promise.all([
+  // 向きの判定(4枚に回した画像から読める1枚を選ばせる)も同時に進める。ページ分けが失敗しても向きは直せる
+  const [crops, classified, orientTurns] = await Promise.all([
     detectCrops(pdfBuffer, pageCount),
     classifyPages(pdf_base64, pageCount, Math.min(35_000, remaining())).catch((err) => ({ error: err })),
+    detectOrientations(pdfBuffer, pageCount, Math.min(30_000, remaining())),
   ]);
   timings.classify_ms = Date.now() - started;
 
@@ -99,12 +102,14 @@ export default async function handler(req, res) {
       res.status(500).json({ error: "FAXの読み取りに失敗しました(再試行します)", detail: String(err), attempt });
       return;
     }
-    // 何度やっても読めないときは、全ページを「要確認」の単独グループで取り込む(取りこぼし防止)
+    // 何度やっても読めないときは、全ページを「要確認」の単独グループで取り込む(取りこぼし防止)。
+    // 向きは判定できていれば、まっすぐにして印刷する
+    for (const [n, t] of Object.entries(orientTurns)) if (t) turns[n] = t;
   } else {
     rawSender = classified.sender;
 
     // 2) 同じ人のページをまとめ、患者さんごとに処方内容まで詳しく読む(同時に進める)
-    const grouped = groupPages(classified.pages, pageCount);
+    const grouped = groupPages(classified.pages, pageCount, orientTurns);
     await Promise.all(
       grouped.map(async (g) => {
         if (g.kind !== "prescription") return;

@@ -301,6 +301,35 @@ export default function FaxQueue({ canManage = false }) {
     return true;
   }
 
+  // 名前・送信元・処方内容を、AIで読み直す(まとめ方は変えない)
+  const [rereading, setRereading] = useState(false);
+  async function rereadItem(item) {
+    setRereading(true);
+    setSaveError("");
+    const groups = items
+      .filter((i) => i.fax_id === item.fax_id)
+      .map((i) => i.source_pages)
+      .sort((a, b) => a[0] - b[0]);
+    try {
+      const res = await fetch("/api/fax-regroup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fax_id: item.fax_id, groups, reread: true, only: item.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setSaveError(data.error || "読み直しに失敗しました");
+      } else {
+        const updated = (data.items || []).find((i) => i.id === item.id);
+        await load(true);
+        if (updated) openEdit(updated, data.items);
+      }
+    } catch {
+      setSaveError("通信エラーが発生しました");
+    }
+    setRereading(false);
+  }
+
   async function deleteAll() {
     await deleteRequest(
       { all: true },
@@ -512,6 +541,14 @@ export default function FaxQueue({ canManage = false }) {
                 PDFを開く
               </button>
               {editing.item.has_pdf && <FaxPrintButton ids={[editing.item.id]} />}
+              {editing.kind === "prescription" && editing.item.fax_id && (
+                <>
+                  <button type="button" style={styles.rereadButton} onClick={() => rereadItem(editing.item)} disabled={rereading}>
+                    {rereading ? "AIが読み取り中…(20〜30秒)" : "🔄 AIで読み取り直す(名前・送信元・処方内容)"}
+                  </button>
+                  {rereading && <span style={styles.note}>そのままお待ちください</span>}
+                </>
+              )}
             </div>
 
             <label style={styles.label}>
@@ -872,6 +909,15 @@ const styles = {
     cursor: "pointer",
   },
   pdfButtons: { display: "flex", flexDirection: "column", gap: "0.5rem" },
+  rereadButton: {
+    padding: "0.55rem",
+    borderRadius: "6px",
+    border: "1px solid #7c3aed",
+    background: "#fff",
+    color: "#6d28d9",
+    fontSize: "0.9rem",
+    cursor: "pointer",
+  },
   twoCols: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.5rem" },
   dangerSub: {
     padding: "0.4rem 0.8rem",

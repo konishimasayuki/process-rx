@@ -12,7 +12,9 @@ class AiError extends Error {
   }
 }
 
-async function callClaude({ system, pdfBase64, text, maxTokens, timeoutMs }) {
+// content を渡すと、その内容をそのまま送る(画像など)。渡さなければ、PDF + text を送る
+// model を渡すと、そのモデルで呼ぶ(向きの判定は小さく安いモデルを使う)
+export async function callClaude({ system, pdfBase64, text, content, maxTokens, timeoutMs, model }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(1000, timeoutMs));
   let response;
@@ -26,13 +28,13 @@ async function callClaude({ system, pdfBase64, text, maxTokens, timeoutMs }) {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: MODEL,
+        model: model || MODEL,
         max_tokens: maxTokens,
         system,
         messages: [
           {
             role: "user",
-            content: [
+            content: content || [
               { type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfBase64 } },
               { type: "text", text },
             ],
@@ -164,7 +166,7 @@ export function turnFromTextTop(textTop) {
   return TURN_BY_TEXT_TOP[String(textTop || "").toLowerCase()] ?? 0;
 }
 
-export function groupPages(pageInfos, pageCount) {
+export function groupPages(pageInfos, pageCount, orientTurns = {}) {
   const byPage = new Map();
   for (const p of pageInfos) {
     const n = Number(p.page);
@@ -190,7 +192,8 @@ export function groupPages(pageInfos, pageCount) {
       }
     }
 
-    const turn = turnFromTextTop(info.text_top);
+    // 向き: 専用の判定(4枚から読める1枚を選ぶ)があればそれを使い、無いページだけページ分けの読み取りの答えを使う
+    const turn = orientTurns[n] !== undefined ? orientTurns[n] : turnFromTextTop(info.text_top);
     if (join) {
       cur.pages.push(n);
       mergeIdentity(cur.identity, id);

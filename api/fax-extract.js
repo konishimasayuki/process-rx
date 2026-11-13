@@ -78,6 +78,18 @@ export default async function handler(req, res) {
         }
       })
     );
+    // 送信元が不明のFAXは、読み取れた医療機関名から補う
+    if (!items.some((it) => it.sender)) {
+      const inst = items.map((it) => it.extracted?.issuing_institution).find(Boolean);
+      if (inst) {
+        for (const it of items) {
+          it.sender = inst;
+          if (await redis.exists(`fax:item:${it.id}`)) {
+            await redis.set(`fax:item:${it.id}`, JSON.stringify(it), it.demo ? { keepTtl: true } : undefined);
+          }
+        }
+      }
+    }
     await saveSummary(redis, faxId, items);
     res.status(200).json({
       status: "ok",
