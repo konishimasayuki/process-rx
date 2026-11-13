@@ -21,14 +21,14 @@ import subprocess
 import zipfile
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import requests
 
 APP_TITLE = "process-rx FAX取込"
-AGENT_VERSION = "1.1.1"
+AGENT_VERSION = "1.2.0"
 API_BASE = "https://process-rx.vercel.app"
 DEFAULT_FAX_FOLDER = r"\\192.168.11.1\シェアード\fax"
 POLL_INTERVAL_SECONDS = 15
@@ -221,6 +221,8 @@ def load_state():
                 "printed": set(data.get("printed", [])),
                 "attempts": dict(data.get("attempts", {})),
                 "folder": data.get("folder"),
+                "handled_commands": list(data.get("handled_commands", [])),
+                "command_results": dict(data.get("command_results", {})),
             }
         except (json.JSONDecodeError, OSError):
             logger.warning("状態ファイルの読み込みに失敗しました。空の状態から始めます")
@@ -233,6 +235,8 @@ def save_state(state: dict) -> None:
         "printed": sorted(state["printed"]),
         "attempts": state["attempts"],
         "folder": state.get("folder"),
+        "handled_commands": state.get("handled_commands", [])[-20:],
+        "command_results": state.get("command_results", {}),
     }
     state_path().write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
@@ -296,19 +300,27 @@ def print_pdf(pdf_path: Path, settings: dict) -> bool:
 DEFAULT_SETTINGS = {"fax_folder": DEFAULT_FAX_FOLDER, "auto_print": True, "printer": ""}
 
 
-def fetch_settings(config: dict) -> dict:
-    """設定画面の内容を取得する(生存確認も兼ねる)。取れないときは前回の値を使う"""
+_pdf_count = None  # FAXフォルダ内のPDFの数(画面に表示するため、設定の取得時に送る)
+
+
+def fetch_server(config: dict):
+    """設定画面の内容と、画面からの依頼(既存FAXの取込など)を取得する(生存確認も兼ねる)。
+    取れないときは前回の設定を使う。戻り値: (設定, 依頼またはNone)"""
     try:
+        params = {"version": AGENT_VERSION, "host": os.environ.get("COMPUTERNAME", "")}
+        if _pdf_count is not None:
+            params["pdf_count"] = _pdf_count
         res = requests.get(
             f"{config['api_base']}/api/fax-agent",
-            params={"version": AGENT_VERSION, "host": os.environ.get("COMPUTERNAME", "")},
+            params=params,
             headers={"x-fax-secret": config["secret"]},
             timeout=20,
         )
         if res.status_code == 401:
             logger.error("合言葉が違います。config.json を削除して起動し直し、正しい合言葉を入れてください")
         elif res.status_code == 200:
-            settings = {**DEFAULT_SETTINGS, **res.json().get("settings", {})}
+            body = res.json()
+            settings = {**DEFAULT_SETTINGS, **body.get("settings", {})}
             if settings != config.get("server_settings"):
                 config["server_settings"] = settings
                 save_config(config)
@@ -318,10 +330,26 @@ def fetch_settings(config: dict) -> dict:
                     "する" if settings["auto_print"] else "しない",
                     settings["printer"] or "いつも使うプリンタ",
                 )
-            return settings
+            return settings, body.get("command")
     except requests.RequestException as err:
         logger.warning("設定の取得に失敗しました(前回の設定で続行): %s", err)
-    return {**DEFAULT_SETTINGS, **config.get("server_settings", {})}
+    return {**DEFAULT_SETTINGS, **config.get("server_settings", {})}, None
+
+
+def fetch_settings(config: dict) -> dict:
+    return fetch_server(config)[0]
+
+
+def report_command(config: dict, command_id: str, status: str, progress=None, result=None) -> None:
+    try:
+        requests.post(
+            f"{config['api_base']}/api/fax-agent",
+            json={"command_id": command_id, "status": status, "progress": progress, "result": result},
+            headers={"x-fax-secret": config["secret"]},
+            timeout=20,
+        )
+    except requests.RequestException:
+        pass  # 画面の進み具合表示用なので、失敗しても取込自体は続ける
 
 
 def report_printed(item_id: str, config: dict) -> None:
@@ -343,10 +371,11 @@ def safe_name(text: str) -> str:
     return text[:40] or "不明"
 
 
-def upload(pdf_path: Path, config: dict):
+def upload(pdf_path: Path, config: dict, extra=None):
     payload = {
         "filename": pdf_path.name,
         "pdf_base64": base64.b64encode(pdf_path.read_bytes()).decode("ascii"),
+        **(extra or {}),
     }
     return requests.post(
         f"{config['api_base']}/api/fax-intake",
@@ -480,6 +509,8 @@ def run_once(config: dict, settings: dict, state: dict) -> None:
         report_folder_error(folder, err)
         return
     _last_folder_error["text"] = ""
+    global _pdf_count
+    _pdf_count = len(pdfs)
 
     # 初回、または設定画面でフォルダが変わったときは、今あるファイルを取り込まない
     if state.get("folder") != folder:
@@ -508,6 +539,82 @@ def run_once(config: dict, settings: dict, state: dict) -> None:
             save_state(state)
 
 
+def handle_command(command: dict, config: dict, settings: dict, state: dict) -> None:
+    """画面からの依頼を実行する。いまは「フォルダにある既存FAXの取込」のみ。
+    新しい順に指定件数を取り込み(古い順にアップロード)、印刷や保存はしない。"""
+    if command.get("type") != "import_existing":
+        return
+    cid = command["id"]
+    handled = state.setdefault("handled_commands", [])
+    results = state.setdefault("command_results", {})
+    if cid in handled:
+        # 完了の報告だけ届いていなかった場合は、前回の結果をもう一度報告する
+        report_command(config, cid, "done", result=results.get(cid))
+        return
+
+    folder = settings["fax_folder"]
+    count = int(command.get("count") or 5)
+    logger.info("画面からの依頼: フォルダの新しいFAX %d件を取り込みます(印刷はしません)", count)
+    report_command(config, cid, "running", progress="フォルダを確認中")
+
+    try:
+        pdfs = list_pdfs(folder)
+    except OSError as err:
+        logger.error("FAXフォルダを開けません: %s", err)
+        result = {"error": f"FAXフォルダを開けません: {err}"}
+        handled.append(cid)
+        results[cid] = result
+        save_state(state)
+        report_command(config, cid, "failed", result=result)
+        return
+
+    newest = sorted(pdfs, key=lambda item: item[2], reverse=True)[:count]
+    targets = sorted(newest, key=lambda item: item[2])  # 古い順(新しいFAXが一覧の上に来る)
+    result = {"total": len(targets), "uploaded": 0, "duplicate": 0, "too_large": 0, "failed": 0}
+
+    for index, (name, pdf_path, mtime, size) in enumerate(targets, start=1):
+        report_command(config, cid, "running", progress=f"{index - 1}/{len(targets)}")
+        if size > MAX_UPLOAD_BYTES:
+            logger.error("大きすぎて取り込めません(%.1fMB): %s", size / 1_000_000, name)
+            result["too_large"] += 1
+            continue
+        try:
+            res = upload(
+                pdf_path,
+                config,
+                {
+                    "imported": True,
+                    "original_time": datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat(),
+                },
+            )
+        except (requests.RequestException, OSError) as err:
+            logger.error("取込に失敗しました(%s): %s", name, err)
+            result["failed"] += 1
+            continue
+        if res.status_code == 200:
+            if res.json().get("status") == "duplicate":
+                result["duplicate"] += 1
+            else:
+                result["uploaded"] += 1
+            state["files"].add(name)
+            logger.info("取込 %d/%d: %s", index, len(targets), name)
+        else:
+            logger.error("取込に失敗しました(%s): 状態%s", name, res.status_code)
+            result["failed"] += 1
+
+    handled.append(cid)
+    results[cid] = result
+    save_state(state)
+    report_command(config, cid, "done", progress=f"{len(targets)}/{len(targets)}", result=result)
+    logger.info(
+        "取込が終わりました: 新規%d件 / 取込済み%d件 / 大きすぎ%d件 / 失敗%d件",
+        result["uploaded"],
+        result["duplicate"],
+        result["too_large"],
+        result["failed"],
+    )
+
+
 def main() -> None:
     if ensure_installed():
         return
@@ -526,8 +633,10 @@ def main() -> None:
 
     while True:
         try:
-            settings = fetch_settings(config)
+            settings, command = fetch_server(config)
             run_once(config, settings, state)
+            if command:
+                handle_command(command, config, settings, state)
         except Exception as err:  # noqa: BLE001 常駐を止めないため
             logger.exception("予期しないエラー: %s", err)
         time.sleep(POLL_INTERVAL_SECONDS)

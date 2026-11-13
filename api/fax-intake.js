@@ -124,7 +124,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { filename, pdf_base64 } = req.body || {};
+  const { filename, pdf_base64, imported, original_time } = req.body || {};
   if (!filename || !pdf_base64) {
     res.status(400).json({ error: "filename と pdf_base64 は必須です" });
     return;
@@ -195,6 +195,12 @@ export default async function handler(req, res) {
     const record = {
       id,
       fax_id: contentHash,
+      // 既存フォルダから後で取り込んだFAX(元の受信時刻つき・印刷しない)
+      imported: imported === true ? true : undefined,
+      original_time:
+        imported === true && original_time && !Number.isNaN(Date.parse(original_time))
+          ? new Date(original_time).toISOString()
+          : undefined,
       sender,
       filename,
       received_at: receivedAt,

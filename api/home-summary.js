@@ -29,7 +29,9 @@ export default async function handler(req, res) {
         .filter(Boolean)
         .map((r) => (typeof r === "string" ? JSON.parse(r) : r))
     : [];
-  const prescriptions = faxItems.filter((i) => i.is_prescription);
+  // 後から取り込んだ過去分(imported)は、本日の受信・未印刷の数に入れない
+  const liveItems = faxItems.filter((i) => !i.imported);
+  const prescriptions = liveItems.filter((i) => i.is_prescription);
 
   const [deliveriesToday, unassigned] = await Promise.all([
     redis.scard(`board:date:${today}`),
@@ -39,7 +41,7 @@ export default async function handler(req, res) {
   const result = {
     today,
     fax: {
-      faxes: new Set(faxItems.map((i) => i.fax_id || i.filename)).size,
+      faxes: new Set(liveItems.map((i) => i.fax_id || i.filename)).size,
       patients: prescriptions.length,
       unprinted: prescriptions.filter((i) => !i.printed_at).length,
       needs_review: prescriptions.filter((i) => i.needs_review).length,

@@ -58,6 +58,10 @@ export default function FaxQueue({ canManage = false }) {
   const [senderEdit, setSenderEdit] = useState(null); // 送信元の修正
   const [saveError, setSaveError] = useState("");
   const searchTimer = useRef(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [agent, setAgent] = useState(null); // {heartbeat, command}
+  const [importCount, setImportCount] = useState(5);
+  const [importError, setImportError] = useState("");
   // 30秒ごとの自動更新でも、いま見ている日付・検索語を使うために保持
   const queryRef = useRef("");
   const dateRef = useRef(null);
@@ -180,15 +184,104 @@ export default function FaxQueue({ canManage = false }) {
     setSenderEdit(null);
   }
 
+  async function loadAgent() {
+    const res = await fetch("/api/fax-agent");
+    if (res.ok) setAgent(await res.json());
+  }
+
+  const commandActive = agent?.command && ["pending", "running"].includes(agent.command.status);
+
+  // 取込の依頼中・実行中は、進み具合を3秒ごとに確認し、終わったら一覧を更新する
+  useEffect(() => {
+    if (!importOpen || !commandActive) return undefined;
+    const t = setInterval(async () => {
+      const res = await fetch("/api/fax-agent");
+      if (!res.ok) return;
+      const next = await res.json();
+      setAgent(next);
+      if (next.command && !["pending", "running"].includes(next.command.status)) {
+        load(true, { query: "", date: null });
+      }
+    }, 3000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [importOpen, commandActive]);
+
+  function openImport() {
+    setImportError("");
+    setImportOpen(true);
+    loadAgent();
+  }
+
+  async function startImport() {
+    setImportError("");
+    const res = await fetch("/api/fax-agent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command: "import_existing", count: importCount }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return setImportError(data.error || "依頼に失敗しました");
+    setQuery("");
+    setDate(null);
+    loadAgent();
+  }
+
+  async function deleteRequest(body, confirmText) {
+    if (!window.confirm(confirmText)) return false;
+    setBusy(true);
+    const res = await fetch("/api/fax-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    setBusy(false);
+    if (!res.ok) {
+      setSaveError(data.error || "削除に失敗しました");
+      return false;
+    }
+    await load(true);
+    return true;
+  }
+
+  async function deleteAll() {
+    await deleteRequest(
+      { all: true },
+      "受信一覧のFAXをすべて削除します。合体PDFも消え、元に戻せません。よろしいですか？"
+    );
+  }
+
+  async function deleteFax(rows) {
+    const ok = await deleteRequest(
+      { fax_id: rows[0].fax_id || undefined, id: rows[0].fax_id ? undefined : rows[0].id },
+      `このFAX(${rows.length}件)を削除しますか？`
+    );
+    if (ok) setSenderEdit(null);
+  }
+
+  async function deleteItem(item) {
+    const ok = await deleteRequest({ id: item.id }, "この1件を削除しますか？");
+    if (ok) setEditing(null);
+  }
+
   return (
     <div style={styles.container}>
       <div style={styles.headerRow}>
         <h2 style={styles.heading}>FAX受信一覧</h2>
         <div style={styles.headerButtons}>
           {canManage && (
-            <button style={styles.subButton} onClick={toggleDemo} disabled={busy}>
-              {hasDemo ? "サンプルを消す" : "サンプル表示"}
-            </button>
+            <>
+              <button style={styles.subButton} onClick={openImport}>
+                既存FAXを取り込む
+              </button>
+              <button style={styles.subButton} onClick={toggleDemo} disabled={busy}>
+                {hasDemo ? "サンプルを消す" : "サンプル表示"}
+              </button>
+              <button style={styles.dangerSub} onClick={deleteAll} disabled={busy}>
+                すべて削除
+              </button>
+            </>
           )}
           <button style={styles.subButton} onClick={() => load()}>
             更新
@@ -271,9 +364,13 @@ export default function FaxQueue({ canManage = false }) {
                   </span>
                   <span style={styles.editMark}>✎</span>
                   {first.demo && <span style={styles.badgeDemo}>サンプル</span>}
+                  {first.imported && <span style={styles.badgeImport}>取込</span>}
                 </span>
                 <span style={styles.faxMeta}>
-                  {formatTime(first.received_at)} 受信 ・ 全{first.source_page_count}頁 → {patients}名分
+                  {first.imported && first.original_time
+                    ? `元の受信 ${formatTime(first.original_time)}`
+                    : `${formatTime(first.received_at)} 受信`}{" "}
+                  ・ 全{first.source_page_count}頁 → {patients}名分
                 </span>
               </button>
 
@@ -300,6 +397,7 @@ export default function FaxQueue({ canManage = false }) {
                       <span style={styles.badgeOrange}>要確認</span>
                     )}
                     {item.is_prescription &&
+                      !item.imported &&
                       (item.printed_at ? (
                         <span style={styles.badgeGreen}>印刷済</span>
                       ) : (
@@ -362,9 +460,16 @@ export default function FaxQueue({ canManage = false }) {
             </label>
 
             {saveError && <p style={styles.error}>{saveError}</p>}
-            <button style={styles.button} type="submit">
-              保存
-            </button>
+            <div style={styles.formButtons}>
+              <button style={styles.button} type="submit">
+                保存
+              </button>
+              {canManage && (
+                <button type="button" style={styles.dangerButton} onClick={() => deleteItem(editing.item)}>
+                  この1件を削除
+                </button>
+              )}
+            </div>
           </form>
         </Modal>
       )}
@@ -383,11 +488,107 @@ export default function FaxQueue({ canManage = false }) {
             </label>
             <p style={styles.note}>このFAXの全員({senderEdit.rows.length}件)に反映されます</p>
             {saveError && <p style={styles.error}>{saveError}</p>}
-            <button style={styles.button} type="submit">
-              保存
-            </button>
+            <div style={styles.formButtons}>
+              <button style={styles.button} type="submit">
+                保存
+              </button>
+              {canManage && (
+                <button type="button" style={styles.dangerButton} onClick={() => deleteFax(senderEdit.rows)}>
+                  このFAXを削除
+                </button>
+              )}
+            </div>
           </form>
         </Modal>
+      )}
+
+      {importOpen && (
+        <Modal title="フォルダにある既存FAXを取り込む" onClose={() => setImportOpen(false)}>
+          <ImportPanel
+            agent={agent}
+            count={importCount}
+            setCount={setImportCount}
+            error={importError}
+            onStart={startImport}
+            onClose={() => setImportOpen(false)}
+          />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function agentOnline(hb) {
+  return !!hb && Date.now() - new Date(hb.last_seen).getTime() < 90000;
+}
+
+function ImportPanel({ agent, count, setCount, error, onStart, onClose }) {
+  const hb = agent?.heartbeat;
+  const command = agent?.command;
+  const online = agentOnline(hb);
+  const active = command && ["pending", "running"].includes(command.status);
+  const finished = command && ["done", "failed"].includes(command.status);
+  const result = command?.result;
+
+  return (
+    <div style={styles.form}>
+      <div style={styles.infoBox}>
+        <div>
+          薬局PCのアプリ:{" "}
+          <strong style={{ color: online ? "#047857" : "#dc2626" }}>{online ? "動作中" : "停止中"}</strong>
+        </div>
+        {hb?.pdf_count != null && <div>FAXフォルダのPDF: {hb.pdf_count}件</div>}
+      </div>
+
+      {!active && (
+        <>
+          <label style={styles.label}>
+            新しい順に何件取り込みますか？
+            <select style={styles.input} value={count} onChange={(e) => setCount(Number(e.target.value))}>
+              {[5, 10, 20, 50].map((n) => (
+                <option key={n} value={n}>
+                  {n}件
+                </option>
+              ))}
+            </select>
+          </label>
+          <p style={styles.note}>
+            取り込んだFAXは印刷されません。1通ごとにAIの利用料がかかります。確認が終わったら「すべて削除」で消せます。
+          </p>
+          {!online && <p style={styles.error}>アプリが動いていません。薬局のPCでアプリを起動してください。</p>}
+          {error && <p style={styles.error}>{error}</p>}
+          <button style={styles.button} onClick={onStart} disabled={!online}>
+            取り込む
+          </button>
+        </>
+      )}
+
+      {active && (
+        <div style={styles.progressBox}>
+          <div style={styles.progressTitle}>
+            {command.status === "pending" ? "薬局PCに依頼しました(最大15秒ほどで始まります)…" : "取り込み中…"}
+          </div>
+          {command.progress && <div style={styles.progressText}>{command.progress}</div>}
+          <p style={styles.note}>この画面を開いたままお待ちください。閉じても取り込みは続きます。</p>
+        </div>
+      )}
+
+      {!active && finished && (
+        <div style={styles.resultBox}>
+          {command.status === "failed" ? (
+            <span style={{ color: "#dc2626" }}>失敗しました: {result?.error || "原因不明"}</span>
+          ) : (
+            <span>
+              前回の結果: 新規{result?.uploaded ?? 0}件
+              {result?.duplicate ? ` / 取込済み${result.duplicate}件` : ""}
+              {result?.too_large ? ` / 大きすぎ${result.too_large}件` : ""}
+              {result?.failed ? ` / 失敗${result.failed}件` : ""}
+            </span>
+          )}
+          <button style={styles.linkButton} onClick={onClose}>
+            一覧を見る
+          </button>
+        </div>
       )}
     </div>
   );
@@ -522,6 +723,47 @@ const styles = {
   badgeGray: { ...badge, background: "#f3f4f6", color: "#555" },
   badgeOrange: { ...badge, background: "#fff7ed", color: "#c2410c" },
   badgeDemo: { ...badge, background: "#fef3c7", color: "#92400e" },
+  badgeImport: { ...badge, background: "#e0e7ff", color: "#3730a3" },
+  dangerSub: {
+    padding: "0.4rem 0.8rem",
+    borderRadius: "6px",
+    border: "1px solid #fca5a5",
+    background: "#fff",
+    color: "#dc2626",
+    fontSize: "0.8rem",
+    cursor: "pointer",
+  },
+  dangerButton: {
+    padding: "0.6rem 1.2rem",
+    borderRadius: "6px",
+    border: "1px solid #fca5a5",
+    background: "#fff",
+    color: "#dc2626",
+    fontSize: "0.95rem",
+    cursor: "pointer",
+  },
+  formButtons: { display: "flex", gap: "0.5rem", flexWrap: "wrap" },
+  progressBox: { background: "#eff6ff", borderRadius: "8px", padding: "0.9rem", textAlign: "center" },
+  progressTitle: { fontWeight: 700, color: "#1e3a8a", fontSize: "0.95rem" },
+  progressText: { fontSize: "1.4rem", fontWeight: 700, margin: "0.4rem 0" },
+  resultBox: {
+    background: "#f9fafb",
+    borderRadius: "8px",
+    padding: "0.7rem",
+    fontSize: "0.85rem",
+    display: "flex",
+    flexDirection: "column",
+    gap: "0.4rem",
+  },
+  linkButton: {
+    alignSelf: "flex-start",
+    border: "none",
+    background: "none",
+    color: "#2563eb",
+    fontSize: "0.85rem",
+    padding: 0,
+    cursor: "pointer",
+  },
   form: { display: "flex", flexDirection: "column", gap: "0.7rem" },
   infoBox: { background: "#f9fafb", borderRadius: "8px", padding: "0.6rem", fontSize: "0.8rem", color: "#555", lineHeight: 1.6 },
   pdfButton: {
