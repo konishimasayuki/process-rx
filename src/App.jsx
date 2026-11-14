@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import DestinationsList from "./DestinationsList.jsx";
 import DeliveryBoard from "./DeliveryBoard.jsx";
 import Settings from "./Settings.jsx";
@@ -9,6 +9,8 @@ import MobileApp from "./MobileApp.jsx";
 import MobileHome from "./MobileHome.jsx";
 import TimecardAdmin from "./TimecardAdmin.jsx";
 import Payslips from "./Payslips.jsx";
+
+const SESSION_RETRY_MS = 3000; // ログイン確認に失敗したとき、やり直す間隔
 
 function LoginScreen({ onLoginSuccess }) {
   const [username, setUsername] = useState("");
@@ -230,20 +232,58 @@ export default function App() {
 
   const [session, setSession] = useState(undefined); // undefined = 確認中, null = 未ログイン
   const [view, setView] = useState(() => localStorage.getItem("process_rx_view") || "mobile");
+  const [connectionProblem, setConnectionProblem] = useState(false);
+  const retryTimer = useRef(null);
+  const lastCheck = useRef(0);
 
+  // ログイン確認。通信が切れた・サーバーが一時的に不調なだけのときは、ログアウトにせず、自動で再確認する
   async function checkSession() {
+    clearTimeout(retryTimer.current);
+    lastCheck.current = Date.now();
     try {
       const res = await fetch("/api/session-check");
+      if (res.status === 503) throw new Error("temporary");
       const data = await res.json();
+      setConnectionProblem(false);
       setSession(data.authenticated ? data : null);
     } catch {
-      setSession(null);
+      setConnectionProblem(true);
+      retryTimer.current = setTimeout(checkSession, SESSION_RETRY_MS);
     }
   }
 
   useEffect(() => {
-    if (isPublicBoard) return;
+    if (isPublicBoard) return undefined;
     checkSession();
+
+    // 開きっぱなしのアプリに戻ってきたとき(1時間以上たっていたら)、ログインの有効期間を延ばす
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && Date.now() - lastCheck.current > 60 * 60 * 1000) checkSession();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    // 使っている途中でログインが切れていた(401)ら、ログイン画面に戻す
+    const originalFetch = window.fetch;
+    let lastRecheck = 0;
+    window.fetch = async (...args) => {
+      const res = await originalFetch(...args);
+      const url = String(typeof args[0] === "string" ? args[0] : args[0]?.url || "");
+      if (
+        res.status === 401 &&
+        url.startsWith("/api/") &&
+        !/session-check|\/api\/login|\/api\/logout/.test(url) &&
+        Date.now() - lastRecheck > 3000
+      ) {
+        lastRecheck = Date.now();
+        checkSession();
+      }
+      return res;
+    };
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.fetch = originalFetch;
+      clearTimeout(retryTimer.current);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -281,7 +321,17 @@ export default function App() {
       `}</style>
       {session === undefined ? (
         <div style={styles.wrapper}>
-          <p>読み込み中...</p>
+          {connectionProblem ? (
+            <div style={{ textAlign: "center", padding: "1rem" }}>
+              <p>接続を確認しています…</p>
+              <p style={{ fontSize: "0.8rem", color: "#888" }}>電波の良いところで、そのままお待ちください(自動でやり直します)</p>
+              <button style={styles.switchButton} onClick={checkSession}>
+                今すぐやり直す
+              </button>
+            </div>
+          ) : (
+            <p>読み込み中...</p>
+          )}
         </div>
       ) : !session ? (
         <LoginScreen onLoginSuccess={checkSession} />

@@ -1,8 +1,6 @@
 import crypto from "crypto";
-import { signStandaloneToken } from "./_auth-utils.js";
+import { SESSION_TTL_SECONDS, sessionCookie, signStandaloneToken } from "./_auth-utils.js";
 import { verifyPassword } from "./_password.js";
-
-const SESSION_TTL_SECONDS = 60 * 60 * 12; // 12時間
 
 // 固定アカウント。Upstashが不通でもこのアカウントだけはログイン可能。
 const STANDALONE_USERNAME = process.env.LOGIN_USERNAME || "z";
@@ -49,7 +47,7 @@ export default async function handler(req, res) {
     const token = signStandaloneToken(username, SESSION_TTL_SECONDS);
     res.setHeader(
       "Set-Cookie",
-      `process_rx_session=standalone:${token}; HttpOnly; Path=/; Max-Age=${SESSION_TTL_SECONDS}; SameSite=Lax; Secure`
+      sessionCookie(`standalone:${token}`)
     );
     res.status(200).json({ status: "ok" });
     return;
@@ -60,7 +58,7 @@ export default async function handler(req, res) {
   if (redisToken) {
     res.setHeader(
       "Set-Cookie",
-      `process_rx_session=redis:${redisToken}; HttpOnly; Path=/; Max-Age=${SESSION_TTL_SECONDS}; SameSite=Lax; Secure`
+      sessionCookie(`redis:${redisToken}`)
     );
     res.status(200).json({ status: "ok" });
     return;

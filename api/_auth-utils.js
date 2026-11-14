@@ -54,3 +54,10 @@ export function parseCookies(cookieHeader) {
   });
   return cookies;
 }
+
+// ログインの有効期間: 400日(ブラウザのCookieの上限)。アプリを開くたびに延長されるので、実質ずっとログインしたまま
+export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 400;
+
+export function sessionCookie(value, maxAge = SESSION_TTL_SECONDS) {
+  return `process_rx_session=${value}; HttpOnly; Path=/; Max-Age=${maxAge}; SameSite=Lax; Secure`;
+}
